@@ -1,6 +1,7 @@
 package main
 
 import (
+	link "github.com/younglifestyle/secs4go"
 	"log"
 
 	"github.com/younglifestyle/secs4go/codec"

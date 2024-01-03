@@ -2,6 +2,7 @@ package codec
 
 import (
 	"bytes"
+	link "github.com/younglifestyle/secs4go"
 	"testing"
 )
 

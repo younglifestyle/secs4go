@@ -1,6 +1,7 @@
 package main
 
 import (
+	link "github.com/younglifestyle/secs4go"
 	"github.com/younglifestyle/secs4go/codec"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 	"log"
