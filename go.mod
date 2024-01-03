@@ -7,13 +7,11 @@ require (
 	github.com/funny/utest v0.0.0-20161029064919-43870a374500
 	github.com/looplab/fsm v1.0.1
 	github.com/stretchr/testify v1.8.4
-	github.com/wolimst/lib-secs2-hsms-go v0.0.0-20210416150823-faa0e15e4509
 	go.uber.org/atomic v1.11.0
 )
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/stretchr/objx v0.5.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
