@@ -41,33 +41,34 @@ func NewBinaryNode(values ...interface{}) ItemNode {
 		panic("item node size limit exceeded")
 	}
 
-	var (
-		nodeValues    []int          = make([]int, 0, len(values))
-		nodeVariables map[string]int = make(map[string]int)
-	)
+	nodeValues := make([]int, 0, len(values))
+	nodeVariables := make(map[string]int)
+
 	for i, value := range values {
-		if v, ok := value.(int); ok {
-			// value is a int
+		switch v := value.(type) {
+		case int:
 			nodeValues = append(nodeValues, v)
-		} else if v, ok := value.(string); ok {
+		case uint8:
+			nodeValues = append(nodeValues, int(v))
+		case int8:
+			nodeValues = append(nodeValues, int(v))
+		case string:
 			if strings.HasPrefix(v, "0b") {
-				// value is a binary string
 				vAsInt64, _ := strconv.ParseInt(v, 0, 0)
 				nodeValues = append(nodeValues, int(vAsInt64))
 			} else {
-				// value is a variable
 				if _, ok := nodeVariables[v]; ok {
 					panic("duplicated variable name found")
 				}
 				nodeVariables[v] = i
 				nodeValues = append(nodeValues, 0)
 			}
-		} else {
+		default:
 			panic("input argument contains invalid type for BinaryNode")
 		}
 	}
 
-	node := &BinaryNode{nodeValues, nodeVariables, "binary"}
+	node := &BinaryNode{values: nodeValues, variables: nodeVariables, symbol: "binary"}
 	node.checkRep()
 	return node
 }

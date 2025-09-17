@@ -3,7 +3,6 @@ package hsms
 import (
 	link "github.com/younglifestyle/secs4go"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
-	"github.com/younglifestyle/secs4go/utils"
 )
 
 var HSMSSTYPES = map[int]string{
@@ -17,15 +16,14 @@ var HSMSSTYPES = map[int]string{
 	9: "Separate.req",
 }
 
-// 负责active与passive共同项的抽象
+// HsmsConnection encapsulates active/passive connection behaviour shared by both roles.
 type HsmsConnection struct {
-	// active: Is the connection active (*True*) or passive (*False*)
 	active        bool
 	remoteAddress string
 	remotePort    int
 	sessionID     int
 	hp            *HsmsProtocol
-	connection    *link.Session // 传入
+	connection    *link.Session
 }
 
 func NewHsmsConnection(active bool, address string, port int, sessionID int, delegate *HsmsProtocol) *HsmsConnection {
@@ -52,68 +50,71 @@ func (c *HsmsConnection) Send(msg interface{}) error {
 }
 
 func (c *HsmsConnection) Close() error {
+	if c.connection == nil {
+		return nil
+	}
 	return c.connection.Close()
 }
 
 func (c *HsmsConnection) sendRejectRsp(packet ast.HSMSMessage, reasonCode byte) {
 	rejectReq := ast.NewHSMSMessageRejectReqFromMsg(packet, reasonCode)
-
-	err := c.connection.Send(rejectReq)
-	if err != nil {
-		c.hp.logger.Println("send reject rsp error : ", err)
+	if err := c.connection.Send(rejectReq.ToBytes()); err != nil {
+		c.hp.logger.Println("send reject rsp error:", err)
 	}
 }
 
 func (c *HsmsConnection) sendLinktestReq() {
-	systemId := c.hp.getNextSystemCounter()
-	c.hp.systemQueues[systemId] = utils.NewDeque()
-	defer delete(c.hp.systemQueues, systemId)
+	systemID := c.hp.getNextSystemCounter()
+	queue := c.hp.createQueue(systemID)
+	defer c.hp.removeQueue(systemID)
 
-	err := c.connection.Send(ast.NewHSMSMessageLinktestReq(c.hp.getNextSystemId(systemId)).ToBytes())
-	if err != nil {
-		c.hp.logger.Println("send error : ", err)
+	if err := c.connection.Send(ast.NewHSMSMessageLinktestReq(c.hp.encodeSystemID(systemID)).ToBytes()); err != nil {
+		c.hp.logger.Println("send linktest.req error:", err)
 		return
 	}
 
-	_, err = c.hp.systemQueues[systemId].Get(c.hp.timeouts.T6ControlTransTimeout())
-	if err != nil {
-		c.hp.logger.Println("timeout get rsp : ", err)
-		return
+	if _, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout()); err != nil {
+		c.hp.logger.Println("timeout waiting linktest.rsp:", err)
 	}
 }
 
 func (c *HsmsConnection) sendDeselectRsp(message ast.HSMSMessage, selectStatus byte) {
-	c.connection.Send(ast.NewHSMSMessageDeselectRsp(message, selectStatus).ToBytes())
+	if err := c.connection.Send(ast.NewHSMSMessageDeselectRsp(message, selectStatus).ToBytes()); err != nil {
+		c.hp.logger.Println("send deselect.rsp error:", err)
+	}
 }
 
 func (c *HsmsConnection) sendSelectRsp(message ast.HSMSMessage, selectStatus byte) {
-	c.connection.Send(ast.NewHSMSMessageSelectRsp(message, selectStatus).ToBytes())
+	if err := c.connection.Send(ast.NewHSMSMessageSelectRsp(message, selectStatus).ToBytes()); err != nil {
+		c.hp.logger.Println("send select.rsp error:", err)
+	}
 }
 
 func (c *HsmsConnection) sendLinkTestRsp(message ast.HSMSMessage) {
-	c.connection.Send(ast.NewHSMSMessageLinktestRsp(message).ToBytes())
+	if err := c.connection.Send(ast.NewHSMSMessageLinktestRsp(message).ToBytes()); err != nil {
+		c.hp.logger.Println("send linktest.rsp error:", err)
+	}
 }
 
 func (c *HsmsConnection) sendReject(message ast.HSMSMessage, reasonCode byte) {
-	c.connection.Send(ast.NewHSMSMessageRejectReqFromMsg(message, reasonCode).ToBytes())
+	if err := c.connection.Send(ast.NewHSMSMessageRejectReqFromMsg(message, reasonCode).ToBytes()); err != nil {
+		c.hp.logger.Println("send reject.req error:", err)
+	}
 }
 
-func (c *HsmsConnection) sendSelectReq() (err error) {
+func (c *HsmsConnection) sendSelectReq() error {
+	systemID := c.hp.getNextSystemCounter()
+	queue := c.hp.createQueue(systemID)
+	defer c.hp.removeQueue(systemID)
 
-	systemId := c.hp.getNextSystemCounter()
-	c.hp.systemQueues[systemId] = utils.NewDeque()
-	defer delete(c.hp.systemQueues, systemId)
-
-	err = c.connection.Send(ast.NewHSMSMessageSelectReq(0xFFFF, c.hp.getNextSystemId(systemId)).ToBytes())
-	if err != nil {
-		c.hp.logger.Println("send error : ", err)
-		return
+	if err := c.connection.Send(ast.NewHSMSMessageSelectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID)).ToBytes()); err != nil {
+		c.hp.logger.Println("send select.req error:", err)
+		return err
 	}
 
-	_, err = c.hp.systemQueues[systemId].Get(c.hp.timeouts.T6ControlTransTimeout())
-	if err != nil {
-		c.hp.logger.Println("timeout get rsp : ", err)
-		return
+	if _, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout()); err != nil {
+		c.hp.logger.Println("timeout waiting select.rsp:", err)
+		return err
 	}
 
 	return nil

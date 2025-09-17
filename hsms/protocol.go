@@ -3,7 +3,13 @@ package hsms
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"log"
+	"math/rand"
+	"sync"
+	"time"
+
 	"github.com/looplab/fsm"
 	link "github.com/younglifestyle/secs4go"
 	"github.com/younglifestyle/secs4go/codec"
@@ -11,31 +17,57 @@ import (
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/parser/hsms"
 	"github.com/younglifestyle/secs4go/utils"
 	"go.uber.org/atomic"
-	"log"
-	"math/rand"
-	"time"
 )
+
+var (
+	// ErrNotConnected is returned when HSMS operations are invoked before the
+	// TCP session is established.
+	ErrNotConnected = errors.New("hsms: connection not established")
+	// ErrNotSelected is returned when operations require the HSMS connection to
+	// be in SELECTED state but it is not.
+	ErrNotSelected = errors.New("hsms: connection not selected")
+	// ErrTimeout indicates the remote side did not answer within the configured timeout.
+	ErrTimeout = errors.New("hsms: timeout waiting for response")
+)
+
+type DataMessageHandler func(*ast.DataMessage) (*ast.DataMessage, error)
+
+func streamFunctionKey(stream, function int) string {
+	return fmt.Sprintf("S%02dF%02d", stream, function)
+}
 
 // HsmsProtocol represents the base class for creating Host/Equipment models.
 type HsmsProtocol struct {
-	remoteAddress    string
-	remotePort       int
-	active           bool
-	sessionID        int
-	name             string
-	enabled          bool
-	logger           *log.Logger
-	connected        bool
-	stopServerThread bool
-	systemCounter    *atomic.Uint32
-	linktestTimer    *time.Ticker
-	disconnectFlg    chan struct{}
-	systemQueues     map[uint32]*utils.Deque
-	timeouts         *SecsTimeout
-	connectionState  *ConnectionStateMachine
-	hsmsConnection   *HsmsConnection
-	//connection       *link.Session
-	server *link.Server
+	remoteAddress string
+	remotePort    int
+	active        bool
+	sessionID     int
+	name          string
+
+	enabled   *atomic.Bool
+	connected *atomic.Bool
+
+	logger *log.Logger
+
+	systemCounter *atomic.Uint32
+
+	timeouts        *SecsTimeout
+	connectionState *ConnectionStateMachine
+	hsmsConnection  *HsmsConnection
+
+	queueMu      sync.RWMutex
+	systemQueues map[uint32]*utils.Deque
+
+	handlerMu      sync.RWMutex
+	handlers       map[string]DataMessageHandler
+	defaultHandler DataMessageHandler
+
+	linktestTimerMu sync.Mutex
+	linktestTimer   *time.Ticker
+	disconnectFlg   chan struct{}
+
+	serverMu sync.Mutex
+	server   *link.Server
 }
 
 // NewHsmsProtocol creates a new HsmsProtocol instance.
@@ -48,12 +80,14 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 		active:        active,
 		sessionID:     sessionID,
 		name:          name,
+		enabled:       atomic.NewBool(false),
+		connected:     atomic.NewBool(false),
 		logger:        logger,
-		connected:     false,
 		systemCounter: atomic.NewUint32(rand.Uint32()),
-		disconnectFlg: make(chan struct{}),
 		timeouts:      NewSecsTimeout(),
 		systemQueues:  make(map[uint32]*utils.Deque),
+		handlers:      make(map[string]DataMessageHandler),
+		disconnectFlg: make(chan struct{}, 1),
 	}
 
 	h.connectionState = NewConnectionStateMachine(fsm.Callbacks{
@@ -66,63 +100,90 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 	return h
 }
 
-func (p *HsmsProtocol) startLinktestTimer() {
-	log.Println("Linktest timer expired. Performing linktest...")
-
-	p.linktestTimer = time.NewTicker(time.Duration(p.timeouts.Linktest()) * time.Second)
-	defer func() {
-		p.linktestTimer.Stop()
-		p.linktestTimer = nil
-	}()
-
-	p.hsmsConnection.sendLinktestReq()
+func (p *HsmsProtocol) clearDisconnectFlag() {
 	for {
 		select {
 		case <-p.disconnectFlg:
-			// 状态发生改变，直接退出循环
+		default:
 			return
-		case <-p.linktestTimer.C:
-			// send link test
-			p.hsmsConnection.sendLinktestReq()
 		}
 	}
 }
 
-// 未做其他事，可以后期支持传入回调函数
-func (p *HsmsProtocol) onStateSelect(ctx context.Context, e *fsm.Event) {
-	p.logger.Println("onStateSelect")
+func (p *HsmsProtocol) startLinktestTimer() {
+	ticker := time.NewTicker(time.Duration(p.timeouts.Linktest()) * time.Second)
 
-}
+	p.linktestTimerMu.Lock()
+	p.linktestTimer = ticker
+	p.linktestTimerMu.Unlock()
 
-func (p *HsmsProtocol) onStateDisconnect(ctx context.Context, e *fsm.Event) {
-	p.logger.Println("onStateDisconnect")
+	defer func() {
+		ticker.Stop()
+		p.linktestTimerMu.Lock()
+		if p.linktestTimer == ticker {
+			p.linktestTimer = nil
+		}
+		p.linktestTimerMu.Unlock()
+	}()
 
-	if p.linktestTimer != nil {
-		p.disconnectFlg <- struct{}{}
+	p.clearDisconnectFlag()
+	p.hsmsConnection.sendLinktestReq()
+
+	for {
+		select {
+		case <-ticker.C:
+			p.hsmsConnection.sendLinktestReq()
+		case <-p.disconnectFlg:
+			return
+		}
 	}
 }
 
-// onLinktestTimer is the callback function to be executed when the linktest timer expires.
-func (p *HsmsProtocol) onStateConnect(ctx context.Context, e *fsm.Event) {
-	log.Println("Linktest timer expired. Performing linktest...")
+func (p *HsmsProtocol) stopLinktestTimer() {
+	p.linktestTimerMu.Lock()
+	defer p.linktestTimerMu.Unlock()
+
+	if p.linktestTimer != nil {
+		select {
+		case p.disconnectFlg <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// onStateSelect is triggered when the HSMS connection enters SELECTED state.
+func (p *HsmsProtocol) onStateSelect(ctx context.Context, _ *fsm.Event) {
+	p.logger.Println("state: CONNECTED_SELECTED")
+}
+
+func (p *HsmsProtocol) onStateDisconnect(ctx context.Context, _ *fsm.Event) {
+	p.logger.Println("state: NOT_CONNECTED")
+	p.connected.Store(false)
+	p.stopLinktestTimer()
+}
+
+// onStateConnect is triggered when the HSMS connection transitions out of NOT-CONNECTED.
+func (p *HsmsProtocol) onStateConnect(ctx context.Context, _ *fsm.Event) {
+	p.logger.Println("state: CONNECTED_NOT_SELECTED")
 
 	go func() {
-		// start select process if connection is active
 		if p.active {
-			err := p.hsmsConnection.sendSelectReq()
-			if err != nil {
-				fmt.Println("onStateConnect send select req err : ", err)
+			if err := p.hsmsConnection.sendSelectReq(); err != nil {
+				p.logger.Println("send select.req error:", err)
 				return
 			}
 		}
 
-		// start linktest timer
+		if !p.enabled.Load() {
+			return
+		}
+
 		p.startLinktestTimer()
 	}()
 }
 
-func (p *HsmsProtocol) getNextSystemId(num uint32) []byte {
-	var id = make([]byte, 4)
+func (p *HsmsProtocol) encodeSystemID(num uint32) []byte {
+	id := make([]byte, 4)
 	binary.BigEndian.PutUint32(id, num)
 	return id
 }
@@ -135,78 +196,120 @@ func (p *HsmsProtocol) getNextSystemCounter() uint32 {
 	return uint32(num)
 }
 
-func (p *HsmsProtocol) getQueueForSystem(systemId uint32) *utils.Deque {
-	p.systemQueues[systemId] = utils.NewDeque()
-	return p.systemQueues[systemId]
+func (p *HsmsProtocol) createQueue(systemID uint32) *utils.Deque {
+	queue := utils.NewDeque()
+	p.queueMu.Lock()
+	p.systemQueues[systemID] = queue
+	p.queueMu.Unlock()
+	return queue
 }
 
-func (p *HsmsProtocol) removeQueue(systemId uint32) {
-	delete(p.systemQueues, systemId)
+func (p *HsmsProtocol) fetchQueue(systemID uint32) (*utils.Deque, bool) {
+	p.queueMu.RLock()
+	queue, ok := p.systemQueues[systemID]
+	p.queueMu.RUnlock()
+	return queue, ok
+}
+
+func (p *HsmsProtocol) removeQueue(systemID uint32) {
+	p.queueMu.Lock()
+	delete(p.systemQueues, systemID)
+	p.queueMu.Unlock()
 }
 
 func (p *HsmsProtocol) OnConnectionEstablished() {
-	p.connected = true
-	p.connectionState.Connect()
+	p.connected.Store(true)
+	if err := p.connectionState.Connect(); err != nil {
+		p.logger.Println("change state to CONNECTED error:", err)
+	}
 }
 
-func (p *HsmsProtocol) enable() {
-	if !p.enabled {
-		p.enabled = true
+// Enable starts the connection manager.
+func (p *HsmsProtocol) Enable() {
+	if p.enabled.CompareAndSwap(false, true) {
 		go p.startConnectThread()
 	}
 }
 
-func (p *HsmsProtocol) disable() {
-	if !p.enabled {
-		p.enabled = false
+// Disable stops the HSMS connection and releases resources.
+func (p *HsmsProtocol) Disable() {
+	if !p.enabled.CompareAndSwap(true, false) {
+		return
+	}
 
-		if p.active {
-			p.disconnectFlg <- struct{}{}
-			p.hsmsConnection.Close()
-		} else { // passive
-			p.stopServerThread = true
-			p.server.Stop()
+	p.stopLinktestTimer()
+	p.connected.Store(false)
+
+	if p.active {
+		select {
+		case p.disconnectFlg <- struct{}{}:
+		default:
 		}
+		if err := p.hsmsConnection.Close(); err != nil {
+			p.logger.Println("close session error:", err)
+		}
+	} else {
+		p.serverMu.Lock()
+		if p.server != nil {
+			p.server.Stop()
+			p.server = nil
+		}
+		p.serverMu.Unlock()
 	}
 }
 
 func (p *HsmsProtocol) startConnectThread() {
-	for {
+	for p.enabled.Load() {
 		if p.active {
-			err := p.activeConnect()
-			if err != nil {
-				p.logger.Println("connect error : ", err)
-				// idle t5
-				<-time.After(time.Duration(p.timeouts.t5ConnSeparateTimeout) * time.Second)
+			if err := p.activeConnect(); err != nil {
+				if !p.enabled.Load() {
+					return
+				}
+				p.logger.Println("connect error:", err)
+				time.Sleep(time.Duration(p.timeouts.T5ConnSeparateTimeout()) * time.Second)
 				continue
-			} else {
+			}
+			return
+		}
+
+		if err := p.passiveConnect(); err != nil {
+			if !p.enabled.Load() {
 				return
 			}
-		} else {
-			if !p.stopServerThread {
-				p.passiveConnect()
-			}
+			p.logger.Println("listen error:", err)
+			time.Sleep(time.Second)
+			continue
 		}
 	}
 }
 
-func (p *HsmsProtocol) passiveConnect() {
+func (p *HsmsProtocol) passiveConnect() error {
 	server, err := link.Listen("tcp",
 		fmt.Sprintf("%s:%d", p.remoteAddress, p.remotePort),
 		codec.Bufio(codec.SECSII(), 1024*5, 1024*5),
 		0, link.HandlerFunc(p.OnConnectionEstablishedAndStartReceiver))
 	if err != nil {
-		p.logger.Println("listen tcp error : ", err)
-		return
+		return err
 	}
-	defer server.Stop()
 
-	//err = server.Serve()
+	p.serverMu.Lock()
+	p.server = server
+	p.serverMu.Unlock()
+
 	err = server.SingleServe()
-	if err != nil {
-		p.logger.Println("start tcp server error : ", err)
-		return
+
+	p.serverMu.Lock()
+	if p.server == server {
+		p.server = nil
 	}
+	p.serverMu.Unlock()
+
+	server.Stop()
+
+	if err != nil && p.enabled.Load() {
+		return err
+	}
+	return nil
 }
 
 func (p *HsmsProtocol) activeConnect() error {
@@ -215,133 +318,289 @@ func (p *HsmsProtocol) activeConnect() error {
 	if err != nil {
 		return err
 	}
-	p.hsmsConnection.SetSession(session)
 
+	p.hsmsConnection.SetSession(session)
 	p.OnConnectionEstablishedAndStartReceiver(session)
 
 	return nil
 }
 
-// 处理控制信息
+// handleHsmsRequests processes HSMS control messages.
 func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
-	p.logger.Println("get control message : ", message.Type())
+	p.logger.Println("control message:", message.Type())
+
+	systemID := binary.BigEndian.Uint32(message.SystemBytes())
 
 	switch message.Type() {
 	case hsms.SelectReqStr:
-		if !p.connected {
+		if !p.connected.Load() {
 			p.hsmsConnection.sendReject(message, 4)
-		} else {
-			p.hsmsConnection.sendSelectRsp(message, 0)
-
-			// change state
-			err := p.connectionState.Select()
-			if err != nil {
-				p.logger.Println("change state to select error : ", err)
-			}
+			return
 		}
+		p.hsmsConnection.sendSelectRsp(message, 0)
+		if err := p.connectionState.Select(); err != nil {
+			p.logger.Println("change state to SELECTED error:", err)
+		}
+
 	case hsms.SelectRspStr:
-		// change state
-		err := p.connectionState.Select()
-		if err != nil {
-			p.logger.Println("change state to select error : ", err)
+		if err := p.connectionState.Select(); err != nil {
+			p.logger.Println("change state to SELECTED error:", err)
+		}
+		if queue, ok := p.fetchQueue(systemID); ok {
+			queue.Put(message)
 		}
 
-		systemId := binary.BigEndian.Uint32(message.SystemBytes())
-		if deque, ok := p.systemQueues[systemId]; ok {
-			// send packet to request sender
-			deque.Put(message)
-		}
 	case hsms.DeselectReqStr:
-		if !p.connected {
+		if !p.connected.Load() {
 			p.hsmsConnection.sendReject(message, 4)
-		} else {
-			p.hsmsConnection.sendDeselectRsp(message, 0)
-
-			// update connection state
-			err := p.connectionState.Deselect()
-			if err != nil {
-				p.logger.Println("change state to deselect error : ", err)
-			}
+			return
+		}
+		p.hsmsConnection.sendDeselectRsp(message, 0)
+		if err := p.connectionState.Deselect(); err != nil {
+			p.logger.Println("change state to NOT-SELECTED error:", err)
 		}
 
 	case hsms.DeselectRspStr:
-		// change state
-		err := p.connectionState.Deselect()
-		if err != nil {
-			p.logger.Println("change state to select error : ", err)
+		if err := p.connectionState.Deselect(); err != nil {
+			p.logger.Println("change state to NOT-SELECTED error:", err)
 		}
-
-		systemId := binary.BigEndian.Uint32(message.SystemBytes())
-		if deque, ok := p.systemQueues[systemId]; ok {
-			// send packet to request sender
-			deque.Put(message)
+		if queue, ok := p.fetchQueue(systemID); ok {
+			queue.Put(message)
 		}
 
 	case hsms.LinktestReqStr:
-		// if we are disconnecting send reject else send response
-		if !p.connected {
-			p.hsmsConnection.sendSelectRsp(message, 4)
-		} else {
-			p.hsmsConnection.sendLinkTestRsp(message)
+		if !p.connected.Load() {
+			p.hsmsConnection.sendReject(message, 4)
+			return
 		}
+		p.hsmsConnection.sendLinkTestRsp(message)
+
 	default:
-		systemId := binary.BigEndian.Uint32(message.SystemBytes())
-		if deque, ok := p.systemQueues[systemId]; ok {
-			// send packet to request sender
-			deque.Put(message)
+		if queue, ok := p.fetchQueue(systemID); ok {
+			queue.Put(message)
 		}
 	}
 }
 
-func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.Session) {
-	// passive 单链接, 后期采用参数去控制
-	if !p.active && p.hsmsConnection.Session() == nil {
-		p.hsmsConnection.SetSession(connection)
-	}
-	//if !p.active {
-	//	if p.hsmsConnection.Session() == nil {
-	//		p.hsmsConnection.SetSession(connection)
-	//	} else if !p.hsmsConnection.Session().IsClosed() {
-	//		connection.Close()
-	//		return
-	//	}
-	//}
+func (p *HsmsProtocol) lookupHandler(stream, function int) DataMessageHandler {
+	p.handlerMu.RLock()
+	handler := p.handlers[streamFunctionKey(stream, function)]
+	p.handlerMu.RUnlock()
+	return handler
+}
 
-	// change state
+func (p *HsmsProtocol) invokeHandler(handler DataMessageHandler, msg *ast.DataMessage) {
+	response, err := handler(msg)
+	if err != nil {
+		p.logger.Printf("handler error for S%02dF%02d: %v", msg.StreamCode(), msg.FunctionCode(), err)
+		return
+	}
+
+	if response == nil {
+		return
+	}
+
+	response = response.SetSessionIDAndSystemBytes(p.sessionID, msg.SystemBytes())
+	if response.WaitBit() == "optional" {
+		response = response.SetWaitBit(false)
+	}
+
+	if err := p.hsmsConnection.Send(response.ToBytes()); err != nil {
+		p.logger.Printf("send response S%02dF%02d failed: %v", response.StreamCode(), response.FunctionCode(), err)
+	}
+}
+
+func (p *HsmsProtocol) handleDataMessage(message *ast.DataMessage) {
+	handler := p.lookupHandler(message.StreamCode(), message.FunctionCode())
+	if handler != nil {
+		p.invokeHandler(handler, message)
+		return
+	}
+
+	p.handlerMu.RLock()
+	defaultHandler := p.defaultHandler
+	p.handlerMu.RUnlock()
+
+	if defaultHandler != nil {
+		p.invokeHandler(defaultHandler, message)
+		return
+	}
+
+	p.logger.Printf("unhandled data message S%02dF%02d", message.StreamCode(), message.FunctionCode())
+}
+
+func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.Session) {
+	if !p.active {
+		if p.hsmsConnection.Session() == nil {
+			p.hsmsConnection.SetSession(connection)
+		} else if !p.hsmsConnection.Session().IsClosed() {
+			_ = connection.Close()
+			return
+		} else {
+			p.hsmsConnection.SetSession(connection)
+		}
+	}
+
 	p.OnConnectionEstablished()
 
-	// StartReceiver
-	for {
+	for p.enabled.Load() {
 		rsp, err := connection.Receive()
 		if err != nil {
-			p.logger.Println("recv error : ", err)
-			p.connected = false
-			// TODO 判断错误为异常错误，则调用预设的状态改变函数，改变state状态, 将onStateDisconnect实现
-			p.connectionState.Disconnect()
+			p.logger.Println("receive error:", err)
+			p.connected.Store(false)
+			p.stopLinktestTimer()
+			if err := p.connectionState.Disconnect(); err != nil {
+				p.logger.Println("change state to NOT-CONNECTED error:", err)
+			}
 			return
 		}
 
 		message := rsp.(ast.HSMSMessage)
 		if message.Type() != hsms.DataMessageStr {
 			p.handleHsmsRequests(message)
-		} else {
-			if p.connectionState.CurrentState() != StateConnectedSelected {
-				p.logger.Println("received message when not selected")
-
-				// Send RejectReqHeader
-				p.hsmsConnection.sendReject(message, 4)
-				continue
-			}
-
-			systemId := binary.BigEndian.Uint32(message.SystemBytes())
-			// someone is waiting for this message
-			if deque, ok := p.systemQueues[systemId]; ok {
-				// send packet to request sender
-				deque.Put(message)
-			} else {
-				// TODO check handler corresponding to stream function
-
-			}
+			continue
 		}
+
+		dataMessage, ok := message.(*ast.DataMessage)
+		if !ok {
+			p.logger.Printf("unexpected HSMS message type %T", message)
+			continue
+		}
+
+		if p.connectionState.CurrentState() != StateConnectedSelected {
+			p.logger.Println("received message while not selected")
+			p.hsmsConnection.sendReject(message, 4)
+			continue
+		}
+
+		systemID := binary.BigEndian.Uint32(dataMessage.SystemBytes())
+		if queue, ok := p.fetchQueue(systemID); ok {
+			queue.Put(dataMessage)
+			continue
+		}
+
+		p.handleDataMessage(dataMessage)
 	}
+}
+
+func (p *HsmsProtocol) ensureReady(requireSelected bool) error {
+	if !p.connected.Load() || p.hsmsConnection.Session() == nil {
+		return ErrNotConnected
+	}
+	if requireSelected && p.connectionState.CurrentState() != StateConnectedSelected {
+		return ErrNotSelected
+	}
+	return nil
+}
+
+// SendDataMessage sends a SECS-II data message without waiting for the reply.
+func (p *HsmsProtocol) SendDataMessage(message *ast.DataMessage) error {
+	if message == nil {
+		return errors.New("hsms: nil message")
+	}
+	if err := p.ensureReady(true); err != nil {
+		return err
+	}
+
+	systemID := p.getNextSystemCounter()
+	outgoing := message.SetSessionIDAndSystemBytes(p.sessionID, p.encodeSystemID(systemID))
+	if outgoing.WaitBit() == "optional" {
+		outgoing = outgoing.SetWaitBit(false)
+	}
+
+	return p.hsmsConnection.Send(outgoing.ToBytes())
+}
+
+// SendAndWait sends a SECS-II data message and waits for the response.
+func (p *HsmsProtocol) SendAndWait(message *ast.DataMessage) (*ast.DataMessage, error) {
+	if message == nil {
+		return nil, errors.New("hsms: nil message")
+	}
+	if err := p.ensureReady(true); err != nil {
+		return nil, err
+	}
+
+	systemID := p.getNextSystemCounter()
+	queue := p.createQueue(systemID)
+	defer p.removeQueue(systemID)
+
+	outgoing := message.SetSessionIDAndSystemBytes(p.sessionID, p.encodeSystemID(systemID))
+	if outgoing.WaitBit() == "optional" {
+		outgoing = outgoing.SetWaitBit(true)
+	}
+
+	if err := p.hsmsConnection.Send(outgoing.ToBytes()); err != nil {
+		return nil, err
+	}
+
+	resp, err := queue.Get(p.timeouts.T3ReplyTimeout())
+	if err != nil {
+		return nil, ErrTimeout
+	}
+
+	switch value := resp.(type) {
+	case *ast.DataMessage:
+		return value, nil
+	case ast.HSMSMessage:
+		dataMessage, ok := value.(*ast.DataMessage)
+		if !ok {
+			return nil, fmt.Errorf("hsms: unexpected response type %T", value)
+		}
+		return dataMessage, nil
+	default:
+		return nil, fmt.Errorf("hsms: unexpected response payload %T", resp)
+	}
+}
+
+// SendResponse transmits a SECS-II reply reusing the system bytes from the request.
+func (p *HsmsProtocol) SendResponse(message *ast.DataMessage, systemBytes []byte) error {
+	if message == nil {
+		return errors.New("hsms: nil message")
+	}
+	if err := p.ensureReady(true); err != nil {
+		return err
+	}
+
+	outgoing := message.SetSessionIDAndSystemBytes(p.sessionID, systemBytes)
+	if outgoing.WaitBit() == "optional" {
+		outgoing = outgoing.SetWaitBit(false)
+	}
+
+	return p.hsmsConnection.Send(outgoing.ToBytes())
+}
+
+// RegisterHandler registers a callback for a specific stream/function pair.
+func (p *HsmsProtocol) RegisterHandler(stream, function int, handler DataMessageHandler) {
+	key := streamFunctionKey(stream, function)
+	p.handlerMu.Lock()
+	defer p.handlerMu.Unlock()
+
+	if handler == nil {
+		delete(p.handlers, key)
+		return
+	}
+
+	p.handlers[key] = handler
+}
+
+// RegisterDefaultHandler registers a fallback handler invoked when no specific handler exists.
+func (p *HsmsProtocol) RegisterDefaultHandler(handler DataMessageHandler) {
+	p.handlerMu.Lock()
+	p.defaultHandler = handler
+	p.handlerMu.Unlock()
+}
+
+// Connected reports whether the underlying HSMS session is established.
+func (p *HsmsProtocol) Connected() bool {
+	return p.connected.Load()
+}
+
+// CurrentState returns the current connection state name.
+func (p *HsmsProtocol) CurrentState() string {
+	return p.connectionState.CurrentState()
+}
+
+// Timeouts returns protocol timeout configuration.
+func (p *HsmsProtocol) Timeouts() *SecsTimeout {
+	return p.timeouts
 }
