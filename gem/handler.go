@@ -26,6 +26,7 @@ type Events struct {
 	AlarmReceived         *common.Event
 	AlarmAckReceived      *common.Event
 	RemoteCommandReceived *common.Event
+	EventReportReceived   *common.Event
 }
 
 // GemHandler orchestrates GEM handshake and selected services on top of HSMS protocol.
@@ -54,6 +55,29 @@ type GemHandler struct {
 
 	alarmMu sync.RWMutex
 	alarms  map[int]Alarm
+
+	statusMu    sync.RWMutex
+	statusVars  map[string]*StatusVariable
+	statusOrder []string
+
+	ecMu               sync.RWMutex
+	equipmentConstants map[string]*EquipmentConstant
+	ecOrder            []string
+
+	dataVarMu    sync.RWMutex
+	dataVars     map[string]*DataVariable
+	dataVarOrder []string
+
+	collectionMu     sync.RWMutex
+	collectionEvents map[string]*CollectionEvent
+	collectionOrder  []string
+	reportMu         sync.RWMutex
+	reports          map[string]*ReportDefinition
+	eventLinks       map[string]*collectionEventLink
+
+	processStore          *processProgramStore
+	processUploadHandler  ProcessProgramUploadHandler
+	processRequestHandler ProcessProgramRequestHandler
 
 	remoteMu             sync.RWMutex
 	remoteCommandHandler RemoteCommandHandler
@@ -87,9 +111,17 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 			AlarmReceived:         &common.Event{},
 			AlarmAckReceived:      &common.Event{},
 			RemoteCommandReceived: &common.Event{},
+			EventReportReceived:   &common.Event{},
 		},
-		alarms: make(map[int]Alarm),
-		logger: log.New(log.Writer(), "gem_handler: ", log.LstdFlags),
+		alarms:             make(map[int]Alarm),
+		statusVars:         make(map[string]*StatusVariable),
+		equipmentConstants: make(map[string]*EquipmentConstant),
+		dataVars:           make(map[string]*DataVariable),
+		collectionEvents:   make(map[string]*CollectionEvent),
+		reports:            make(map[string]*ReportDefinition),
+		eventLinks:         make(map[string]*collectionEventLink),
+		processStore:       newProcessProgramStore(),
+		logger:             log.New(log.Writer(), "gem_handler: ", log.LstdFlags),
 	}
 
 	handler.state.setState(CommunicationStateNotCommunicating)
@@ -100,8 +132,20 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 
 	if handler.deviceType == DeviceHost {
 		handler.protocol.RegisterHandler(5, 1, handler.onS5F1)
+		handler.protocol.RegisterHandler(6, 11, handler.onS6F11)
 	} else {
 		handler.protocol.RegisterHandler(2, 41, handler.onS2F41)
+		handler.protocol.RegisterHandler(1, 3, handler.onS1F3)
+		handler.protocol.RegisterHandler(1, 11, handler.onS1F11)
+		handler.protocol.RegisterHandler(2, 13, handler.onS2F13)
+		handler.protocol.RegisterHandler(2, 15, handler.onS2F15)
+		handler.protocol.RegisterHandler(2, 29, handler.onS2F29)
+		handler.protocol.RegisterHandler(2, 33, handler.onS2F33)
+		handler.protocol.RegisterHandler(2, 35, handler.onS2F35)
+		handler.protocol.RegisterHandler(2, 37, handler.onS2F37)
+		handler.protocol.RegisterHandler(6, 15, handler.onS6F15)
+		handler.protocol.RegisterHandler(7, 3, handler.onS7F3)
+		handler.protocol.RegisterHandler(7, 5, handler.onS7F5)
 	}
 
 	handler.protocol.RegisterHandler(5, 2, handler.onS5F2)
