@@ -50,9 +50,9 @@ func runHost(address string, port, session int) {
 	handler.Enable()
 	defer handler.Disable()
 
-	if !handler.WaitForCommunicating(10 * time.Second) {
-		log.Fatal("host failed to reach COMMUNICATING state")
-	}
+	log.Println("Host waiting for equipment to reach COMMUNICATING ...")
+	handler.WaitForCommunicating(0)
+	log.Println("Host in COMMUNICATING state")
 
 	log.Println("Connected. Defining report set ...")
 	if ack, err := handler.DefineReports(gem.ReportDefinitionRequest{
@@ -136,9 +136,9 @@ func runEquipment(address string, port, session int) {
 	handler.Enable()
 	defer handler.Disable()
 
-	if !handler.WaitForCommunicating(10 * time.Second) {
-		log.Fatal("equipment failed to reach COMMUNICATING state")
-	}
+	log.Println("Equipment waiting for host to establish communications ...")
+	handler.WaitForCommunicating(0)
+	log.Println("Equipment in COMMUNICATING state")
 
 	log.Println("Equipment ready. Triggering CEID 3001 every 10s if linked.")
 
