@@ -342,15 +342,36 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 
 		receivedSession := ctrl.SessionID()
 		expectedSession := uint16(p.sessionID)
+		fmt.Println(receivedSession, expectedSession)
 		if receivedSession != expectedSession {
-			p.logger.Printf("select.req session mismatch: got %d expected %d", receivedSession, expectedSession)
-			p.hsmsConnection.sendSelectRsp(message, 1)
-			_ = p.hsmsConnection.Close()
-			p.connected.Store(false)
-			if err := p.connectionState.Disconnect(); err != nil {
-				p.logger.Println("change state to NOT-CONNECTED error:", err)
+			// 0xFFFF0000 是 HSMS 标准规定的“系统消息会话 ID”，只用于 Select/Linktest 等控制消息。
+			acceptMismatch := false
+			if receivedSession == 0xFFFF {
+				p.logger.Printf(
+					"select.req session mismatch: remote used wildcard 0xFFFF, accepting expected %d",
+					expectedSession,
+				)
+				acceptMismatch = true
+			} else if expectedSession == 0 || expectedSession == 0xFFFF {
+				p.logger.Printf(
+					"select.req session mismatch: adopting remote session %d in place of expected %d",
+					receivedSession,
+					expectedSession,
+				)
+				p.sessionID = int(receivedSession)
+				p.hsmsConnection.sessionID = int(receivedSession)
+				acceptMismatch = true
 			}
-			return
+			if !acceptMismatch {
+				p.logger.Printf("select.req session mismatch: got %d expected %d", receivedSession, expectedSession)
+				p.hsmsConnection.sendSelectRsp(message, 1)
+				_ = p.hsmsConnection.Close()
+				p.connected.Store(false)
+				if err := p.connectionState.Disconnect(); err != nil {
+					p.logger.Println("change state to NOT-CONNECTED error:", err)
+				}
+				return
+			}
 		}
 
 		if !p.connected.Load() {

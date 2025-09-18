@@ -424,9 +424,35 @@ func parseReportDefinitionList(msg *ast.DataMessage) ([]reportDefinitionMessage,
 		return nil, fmt.Errorf("expected list payload for S2F33")
 	}
 
-	result := make([]reportDefinitionMessage, 0, list.Size())
-	for i := 0; i < list.Size(); i++ {
-		entryNode, err := list.Get(i)
+	if list.Size() == 0 {
+		return nil, nil
+	}
+
+	var entries *ast.ListNode
+	firstNode, err := list.Get(0)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := firstNode.(*ast.ListNode); ok {
+		entries = list
+	} else {
+		if list.Size() < 2 {
+			return nil, fmt.Errorf("malformed S2F33 payload")
+		}
+		secondNode, err := list.Get(1)
+		if err != nil {
+			return nil, err
+		}
+		entryList, ok := secondNode.(*ast.ListNode)
+		if !ok {
+			return nil, fmt.Errorf("malformed S2F33 report list")
+		}
+		entries = entryList
+	}
+
+	result := make([]reportDefinitionMessage, 0, entries.Size())
+	for i := 0; i < entries.Size(); i++ {
+		entryNode, err := entries.Get(i)
 		if err != nil {
 			return nil, err
 		}
@@ -481,9 +507,35 @@ func parseEventReportLinkList(msg *ast.DataMessage) ([]eventReportLinkMessage, e
 		return nil, fmt.Errorf("expected list payload for S2F35")
 	}
 
-	result := make([]eventReportLinkMessage, 0, list.Size())
-	for i := 0; i < list.Size(); i++ {
-		entryNode, err := list.Get(i)
+	if list.Size() == 0 {
+		return nil, nil
+	}
+
+	var entries *ast.ListNode
+	firstNode, err := list.Get(0)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := firstNode.(*ast.ListNode); ok {
+		entries = list
+	} else {
+		if list.Size() < 2 {
+			return nil, fmt.Errorf("malformed S2F35 payload")
+		}
+		secondNode, err := list.Get(1)
+		if err != nil {
+			return nil, err
+		}
+		entryList, ok := secondNode.(*ast.ListNode)
+		if !ok {
+			return nil, fmt.Errorf("malformed S2F35 link list")
+		}
+		entries = entryList
+	}
+
+	result := make([]eventReportLinkMessage, 0, entries.Size())
+	for i := 0; i < entries.Size(); i++ {
+		entryNode, err := entries.Get(i)
 		if err != nil {
 			return nil, err
 		}
@@ -546,15 +598,22 @@ func parseEventEnableMessage(msg *ast.DataMessage) (eventEnableMessage, error) {
 	if err != nil {
 		return result, err
 	}
-	binary, ok := ceedNode.(*ast.BinaryNode)
-	if !ok {
-		return result, fmt.Errorf("expected binary CEED")
+	switch node := ceedNode.(type) {
+	case *ast.BinaryNode:
+		values, ok := node.Values().([]int)
+		if !ok || len(values) == 0 {
+			return result, fmt.Errorf("invalid CEED payload")
+		}
+		result.enable = values[0] != 0
+	case *ast.BooleanNode:
+		values, ok := node.Values().([]bool)
+		if !ok || len(values) == 0 {
+			return result, fmt.Errorf("invalid CEED payload")
+		}
+		result.enable = values[0]
+	default:
+		return result, fmt.Errorf("expected boolean CEED")
 	}
-	values, ok := binary.Values().([]int)
-	if !ok || len(values) == 0 {
-		return result, fmt.Errorf("invalid CEED payload")
-	}
-	result.enable = values[0] != 0
 
 	ceListNode, err := list.Get(1)
 	if err != nil {
@@ -585,12 +644,23 @@ func parseEventReportRequest(msg *ast.DataMessage) (idInfo, error) {
 		return idInfo{}, fmt.Errorf("nil message")
 	}
 
-	node, err := msg.Get(0)
+	root, err := msg.Get()
 	if err != nil {
 		return idInfo{}, err
 	}
 
-	return newIDInfoFromNode(node)
+	if list, ok := root.(*ast.ListNode); ok {
+		if list.Size() == 0 {
+			return idInfo{}, fmt.Errorf("empty S6F15 payload")
+		}
+		first, err := list.Get(0)
+		if err != nil {
+			return idInfo{}, err
+		}
+		return newIDInfoFromNode(first)
+	}
+
+	return newIDInfoFromNode(root)
 }
 
 func parseEventReportMessage(msg *ast.DataMessage) (EventReport, error) {
@@ -612,9 +682,18 @@ func parseEventReportMessage(msg *ast.DataMessage) (EventReport, error) {
 	if err != nil {
 		return report, err
 	}
-	if bin, ok := dataIDNode.(*ast.BinaryNode); ok {
-		if vals, ok := bin.Values().([]int); ok && len(vals) > 0 {
+	switch node := dataIDNode.(type) {
+	case *ast.BinaryNode:
+		if vals, ok := node.Values().([]int); ok && len(vals) > 0 {
 			report.DATAID = vals[0]
+		}
+	case *ast.UintNode:
+		if vals, ok := node.Values().([]uint64); ok && len(vals) > 0 {
+			report.DATAID = int(vals[0])
+		}
+	case *ast.IntNode:
+		if vals, ok := node.Values().([]int64); ok && len(vals) > 0 {
+			report.DATAID = int(vals[0])
 		}
 	}
 

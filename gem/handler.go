@@ -148,7 +148,7 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		handler.protocol.RegisterHandler(7, 5, handler.onS7F5)
 	}
 
-	handler.protocol.RegisterHandler(5, 2, handler.onS5F2)
+	//handler.protocol.RegisterHandler(5, 2, handler.onS5F2)
 
 	return handler, nil
 }

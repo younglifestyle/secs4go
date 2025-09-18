@@ -124,7 +124,8 @@ func (g *GemHandler) buildS2F33(defs []ReportDefinitionRequest) (*ast.DataMessag
 		}
 		reports = append(reports, ast.NewListNode(rptInfo.node, ast.NewListNode(vidNodes...)))
 	}
-	body := ast.NewListNode(reports...)
+	reportList := ast.NewListNode(reports...)
+	body := ast.NewListNode(ast.NewUintNode(1, 0), reportList)
 	return ast.NewDataMessage("DefineReport", 2, 33, 1, "H->E", body), nil
 }
 
@@ -150,7 +151,8 @@ func (g *GemHandler) buildS2F35(links []EventReportLinkRequest) (*ast.DataMessag
 		}
 		items = append(items, ast.NewListNode(ceInfo.node, ast.NewListNode(rptNodes...)))
 	}
-	body := ast.NewListNode(items...)
+	linkList := ast.NewListNode(items...)
+	body := ast.NewListNode(ast.NewUintNode(1, 0), linkList)
 	return ast.NewDataMessage("LinkEventReport", 2, 35, 1, "H->E", body), nil
 }
 
@@ -160,15 +162,11 @@ func (g *GemHandler) buildS2F36(ack int) *ast.DataMessage {
 }
 
 func (g *GemHandler) buildS2F37(enable bool, ceids []idInfo) *ast.DataMessage {
-	flag := 0
-	if enable {
-		flag = 1
-	}
 	ceNodes := make([]interface{}, 0, len(ceids))
 	for _, ce := range ceids {
 		ceNodes = append(ceNodes, ce.node)
 	}
-	body := ast.NewListNode(ast.NewBinaryNode(flag), ast.NewListNode(ceNodes...))
+	body := ast.NewListNode(ast.NewBooleanNode(enable), ast.NewListNode(ceNodes...))
 	return ast.NewDataMessage("EnableEventReport", 2, 37, 1, "H->E", body)
 }
 
@@ -192,8 +190,7 @@ func (g *GemHandler) buildS6F12(ack int) *ast.DataMessage {
 }
 
 func (g *GemHandler) buildS6F15(ceid idInfo) *ast.DataMessage {
-	body := ast.NewListNode(ceid.node)
-	return ast.NewDataMessage("EventReportRequest", 6, 15, 1, "H->E", body)
+	return ast.NewDataMessage("EventReportRequest", 6, 15, 1, "H->E", ceid.node)
 }
 
 func (g *GemHandler) buildS6F16(dataID int, ceNode ast.ItemNode, reports []ast.ItemNode) *ast.DataMessage {
@@ -205,7 +202,8 @@ func (g *GemHandler) buildS6F16(dataID int, ceNode ast.ItemNode, reports []ast.I
 	if ceNode != nil {
 		ceItem = ceNode
 	}
-	body := ast.NewListNode(ast.NewBinaryNode(dataID), ceItem, ast.NewListNode(reportNodes...))
+	byteSize := byteSizeForUint(uint64(dataID))
+	body := ast.NewListNode(ast.NewUintNode(byteSize, dataID), ceItem, ast.NewListNode(reportNodes...))
 	return ast.NewDataMessage("EventReportData", 6, 16, 0, "H<-E", body)
 }
 
@@ -220,12 +218,18 @@ func (g *GemHandler) buildS7F4(ack int) *ast.DataMessage {
 }
 
 func (g *GemHandler) buildS7F5(ppid idInfo) *ast.DataMessage {
-	body := ast.NewListNode(ppid.node)
-	return ast.NewDataMessage("ProcessProgramRequest", 7, 5, 1, "H->E", body)
+	return ast.NewDataMessage("ProcessProgramRequest", 7, 5, 1, "H->E", ppid.node)
 }
 
 func (g *GemHandler) buildS7F6(ppid ast.ItemNode, programBody string, ack int) *ast.DataMessage {
-	reportBody := ast.NewASCIINode(programBody)
-	payload := ast.NewListNode(ppid, reportBody, ast.NewBinaryNode(ack))
+	ppidNode := ppid
+	if ppidNode == nil {
+		ppidNode = ast.NewEmptyItemNode()
+	}
+	bodyNode := ast.NewASCIINode(programBody)
+	if ack != 0 {
+		bodyNode = ast.NewASCIINode("")
+	}
+	payload := ast.NewListNode(ppidNode, bodyNode, ast.NewBinaryNode(ack))
 	return ast.NewDataMessage("ProcessProgramData", 7, 6, 0, "H<-E", payload)
 }

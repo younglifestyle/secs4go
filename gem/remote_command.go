@@ -83,14 +83,31 @@ func parseRemoteCommand(msg *ast.DataMessage) (RemoteCommandRequest, error) {
 }
 
 func readHCACK(msg *ast.DataMessage) (int, error) {
-	node, err := msg.Get(0)
+	item, err := msg.Get()
 	if err != nil {
 		return -1, err
 	}
-	binary, ok := node.(*ast.BinaryNode)
+
+	binary, ok := item.(*ast.BinaryNode)
 	if !ok {
-		return -1, fmt.Errorf("HCACK not binary")
+		if list, ok := item.(*ast.ListNode); ok {
+			if list.Size() == 0 {
+				return -1, fmt.Errorf("HCACK missing value")
+			}
+			first, err := list.Get(0)
+			if err != nil {
+				return -1, err
+			}
+			binNode, ok := first.(*ast.BinaryNode)
+			if !ok {
+				return -1, fmt.Errorf("HCACK not binary (got %T)", first)
+			}
+			binary = binNode
+		} else {
+			return -1, fmt.Errorf("HCACK not binary (got %T)", item)
+		}
 	}
+
 	values, ok := binary.Values().([]int)
 	if !ok || len(values) == 0 {
 		return -1, fmt.Errorf("HCACK missing value")

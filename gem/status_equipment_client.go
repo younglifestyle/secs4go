@@ -530,14 +530,29 @@ func readBinaryAck(msg *ast.DataMessage) (int, error) {
 		return -1, fmt.Errorf("nil response")
 	}
 
-	node, err := msg.Get(0)
+	item, err := msg.Get()
 	if err != nil {
 		return -1, err
 	}
 
-	binary, ok := node.(*ast.BinaryNode)
+	binary, ok := item.(*ast.BinaryNode)
 	if !ok {
-		return -1, fmt.Errorf("expected binary ack, got %T", node)
+		if list, ok := item.(*ast.ListNode); ok {
+			if list.Size() == 0 {
+				return -1, fmt.Errorf("empty ack payload")
+			}
+			first, err := list.Get(0)
+			if err != nil {
+				return -1, err
+			}
+			binNode, ok := first.(*ast.BinaryNode)
+			if !ok {
+				return -1, fmt.Errorf("expected binary ack, got %T", first)
+			}
+			binary = binNode
+		} else {
+			return -1, fmt.Errorf("expected binary ack, got %T", item)
+		}
 	}
 
 	values, ok := binary.Values().([]int)
