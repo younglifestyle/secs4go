@@ -82,9 +82,22 @@ func (g *GemHandler) onS7F5(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	if msg == nil {
 		return g.buildS7F6(ast.NewEmptyItemNode(), "", 1), nil
 	}
-	ppidNode, err := msg.Get(0)
+	root, err := msg.Get()
 	if err != nil {
 		return g.buildS7F6(ast.NewEmptyItemNode(), "", 1), nil
+	}
+	var ppidNode ast.ItemNode
+	if list, ok := root.(*ast.ListNode); ok {
+		if list.Size() == 0 {
+			return g.buildS7F6(ast.NewEmptyItemNode(), "", 1), nil
+		}
+		first, err := list.Get(0)
+		if err != nil {
+			return g.buildS7F6(ast.NewEmptyItemNode(), "", 1), nil
+		}
+		ppidNode = first
+	} else {
+		ppidNode = root
 	}
 	ppidInfo, err := newIDInfoFromNode(ppidNode)
 	if err != nil {

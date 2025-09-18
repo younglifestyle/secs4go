@@ -57,8 +57,7 @@ func newIDInfo(value interface{}) (idInfo, error) {
 }
 
 func newIDInfoFromUint(value uint64) (idInfo, error) {
-	byteSize := byteSizeForUint(value)
-	node := ast.NewUintNode(byteSize, value)
+	node := ast.NewUintNode(4, value)
 	return idInfo{raw: value, node: node, key: fmt.Sprintf("N:%d", value)}, nil
 }
 
@@ -100,8 +99,6 @@ func byteSizeForUint(value uint64) int {
 	switch {
 	case value <= 0xFF:
 		return 1
-	case value <= 0xFFFF:
-		return 2
 	case value <= 0xFFFFFFFF:
 		return 4
 	default:
