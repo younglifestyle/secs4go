@@ -92,6 +92,13 @@ func (sm *ControlStateMachine) OnlineMode() OnlineControlMode {
 	return sm.onlineMode
 }
 
+// IsOnlineState reports whether the current state belongs to the ONLINE cluster.
+func (sm *ControlStateMachine) IsOnlineState() bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.isOnlineStateLocked()
+}
+
 // SwitchOnline models the operator transition from EQUIPMENT_OFFLINE to ATTEMPT_ONLINE.
 func (sm *ControlStateMachine) SwitchOnline() error {
 	sm.mu.Lock()

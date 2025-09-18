@@ -31,6 +31,7 @@ type Events struct {
 	AlarmAckReceived      *common.Event
 	RemoteCommandReceived *common.Event
 	EventReportReceived   *common.Event
+	ControlStateChanged   *common.Event
 }
 
 // GemHandler orchestrates GEM handshake and selected services on top of HSMS protocol.
@@ -87,6 +88,8 @@ type GemHandler struct {
 	remoteCommandHandler RemoteCommandHandler
 
 	logger *log.Logger
+
+	controlAttemptInProgress *atomic.Bool
 }
 
 // NewGemHandler creates a GEM handler backed by the provided HSMS protocol.
@@ -116,16 +119,18 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 			AlarmAckReceived:      &common.Event{},
 			RemoteCommandReceived: &common.Event{},
 			EventReportReceived:   &common.Event{},
+			ControlStateChanged:   &common.Event{},
 		},
-		alarms:             make(map[int]Alarm),
-		statusVars:         make(map[string]*StatusVariable),
-		equipmentConstants: make(map[string]*EquipmentConstant),
-		dataVars:           make(map[string]*DataVariable),
-		collectionEvents:   make(map[string]*CollectionEvent),
-		reports:            make(map[string]*ReportDefinition),
-		eventLinks:         make(map[string]*collectionEventLink),
-		processStore:       newProcessProgramStore(),
-		logger:             log.New(log.Writer(), "gem_handler: ", log.LstdFlags),
+		alarms:                   make(map[int]Alarm),
+		statusVars:               make(map[string]*StatusVariable),
+		equipmentConstants:       make(map[string]*EquipmentConstant),
+		dataVars:                 make(map[string]*DataVariable),
+		collectionEvents:         make(map[string]*CollectionEvent),
+		reports:                  make(map[string]*ReportDefinition),
+		eventLinks:               make(map[string]*collectionEventLink),
+		processStore:             newProcessProgramStore(),
+		logger:                   log.New(log.Writer(), "gem_handler: ", log.LstdFlags),
+		controlAttemptInProgress: atomic.NewBool(false),
 	}
 
 	handler.state.setState(CommunicationStateNotCommunicating)
@@ -135,6 +140,10 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 	handler.protocol.RegisterHandler(1, 1, handler.onS1F1)
 	handler.protocol.RegisterHandler(1, 13, handler.onS1F13)
 	handler.protocol.RegisterHandler(1, 14, handler.onS1F14)
+	if handler.deviceType == DeviceEquipment {
+		handler.protocol.RegisterHandler(1, 15, handler.onS1F15)
+		handler.protocol.RegisterHandler(1, 17, handler.onS1F17)
+	}
 
 	if handler.deviceType == DeviceHost {
 		handler.protocol.RegisterHandler(5, 1, handler.onS5F1)
@@ -155,6 +164,8 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 	}
 
 	//handler.protocol.RegisterHandler(5, 2, handler.onS5F2)
+
+	handler.onControlStateTransition(ControlStateInit, handler.control.State())
 
 	return handler, nil
 }
@@ -226,6 +237,46 @@ func (g *GemHandler) ControlStateMachine() *ControlStateMachine {
 	return g.control
 }
 
+// SwitchControlOnline requests transition from EQUIPMENT_OFFLINE to ATTEMPT_ONLINE.
+func (g *GemHandler) SwitchControlOnline() error {
+	if g.control == nil {
+		return ErrOperationNotSupported
+	}
+	return g.transitionControl(func(sm *ControlStateMachine) error {
+		return sm.SwitchOnline()
+	})
+}
+
+// SwitchControlOffline requests transition from ONLINE back to EQUIPMENT_OFFLINE.
+func (g *GemHandler) SwitchControlOffline() error {
+	if g.control == nil {
+		return ErrOperationNotSupported
+	}
+	return g.transitionControl(func(sm *ControlStateMachine) error {
+		return sm.SwitchOffline()
+	})
+}
+
+// SwitchControlOnlineLocal sets the ONLINE sub-state to LOCAL.
+func (g *GemHandler) SwitchControlOnlineLocal() error {
+	if g.control == nil {
+		return ErrOperationNotSupported
+	}
+	return g.transitionControl(func(sm *ControlStateMachine) error {
+		return sm.SwitchOnlineLocal()
+	})
+}
+
+// SwitchControlOnlineRemote sets the ONLINE sub-state to REMOTE.
+func (g *GemHandler) SwitchControlOnlineRemote() error {
+	if g.control == nil {
+		return ErrOperationNotSupported
+	}
+	return g.transitionControl(func(sm *ControlStateMachine) error {
+		return sm.SwitchOnlineRemote()
+	})
+}
+
 // WaitForCommunicating blocks until the handler reaches communicating state or timeout is hit.
 func (g *GemHandler) WaitForCommunicating(timeout time.Duration) bool {
 	if g.State() == CommunicationStateCommunicating {
@@ -287,6 +338,93 @@ func (g *GemHandler) notifyCommunicating() {
 	if g.events.HandlerCommunicating != nil {
 		g.events.HandlerCommunicating.Fire(map[string]interface{}{"handler": g})
 	}
+}
+
+func (g *GemHandler) transitionControl(transition func(sm *ControlStateMachine) error) error {
+	if g.control == nil {
+		return ErrOperationNotSupported
+	}
+	prev := g.control.State()
+	if err := transition(g.control); err != nil {
+		return err
+	}
+	next := g.control.State()
+	g.onControlStateTransition(prev, next)
+	return nil
+}
+
+func (g *GemHandler) onControlStateTransition(prev, next ControlState) {
+	if prev == next {
+		return
+	}
+	if prev == ControlStateAttemptOnline && next != ControlStateAttemptOnline {
+		g.controlAttemptInProgress.Store(false)
+	}
+	if g.events.ControlStateChanged != nil {
+		payload := map[string]interface{}{
+			"handler":  g,
+			"previous": prev,
+			"current":  next,
+		}
+		if g.control != nil {
+			payload["mode"] = g.control.OnlineMode()
+		}
+		g.events.ControlStateChanged.Fire(payload)
+	}
+
+	switch next {
+	case ControlStateAttemptOnline:
+		g.initiateAttemptOnline()
+	}
+}
+
+func (g *GemHandler) initiateAttemptOnline() {
+	if g.control == nil {
+		return
+	}
+	if !g.controlAttemptInProgress.CompareAndSwap(false, true) {
+		return
+	}
+
+	go func() {
+		defer g.controlAttemptInProgress.Store(false)
+
+		if g.ControlState() != ControlStateAttemptOnline {
+			return
+		}
+
+		if g.State() != CommunicationStateCommunicating {
+			g.logger.Println("attempt online while not communicating")
+			_ = g.transitionControl(func(sm *ControlStateMachine) error {
+				return sm.AttemptOnlineFailHostOffline()
+			})
+			return
+		}
+
+		resp, err := g.protocol.SendAndWait(g.buildS1F1())
+		if err != nil {
+			g.logger.Println("S1F1 request failed:", err)
+			_ = g.transitionControl(func(sm *ControlStateMachine) error {
+				return sm.AttemptOnlineFailHostOffline()
+			})
+			return
+		}
+		if resp == nil || resp.StreamCode() != 1 || resp.FunctionCode() != 2 {
+			if resp != nil {
+				g.logger.Printf("unexpected response to S1F1: S%02dF%02d", resp.StreamCode(), resp.FunctionCode())
+			} else {
+				g.logger.Println("unexpected nil response to S1F1")
+			}
+			_ = g.transitionControl(func(sm *ControlStateMachine) error {
+				return sm.AttemptOnlineFailHostOffline()
+			})
+			return
+		}
+
+		_ = g.transitionControl(func(sm *ControlStateMachine) error {
+			return sm.AttemptOnlineSuccess()
+		})
+	}()
 }
 
 func (g *GemHandler) monitorLoop(stop <-chan struct{}) {
@@ -438,6 +576,43 @@ func (g *GemHandler) onS1F14(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	return nil, nil
 }
 
+func (g *GemHandler) onS1F15(_ *ast.DataMessage) (*ast.DataMessage, error) {
+	if g.deviceType == DeviceHost {
+		return g.buildS1F16(1), nil
+	}
+
+	oflack := 0
+	if g.control != nil && g.control.IsOnlineState() {
+		if err := g.transitionControl(func(sm *ControlStateMachine) error {
+			return sm.RemoteOffline()
+		}); err != nil {
+			oflack = 1
+		}
+	}
+
+	return g.buildS1F16(oflack), nil
+}
+
+func (g *GemHandler) onS1F17(_ *ast.DataMessage) (*ast.DataMessage, error) {
+	if g.deviceType == DeviceHost {
+		return g.buildS1F18(1), nil
+	}
+
+	onlack := 1
+	state := g.ControlState()
+	if state == ControlStateHostOffline {
+		if err := g.transitionControl(func(sm *ControlStateMachine) error {
+			return sm.RemoteOnline()
+		}); err == nil {
+			onlack = 0
+		}
+	} else if g.control != nil && g.control.IsOnlineState() {
+		onlack = 2
+	}
+
+	return g.buildS1F18(onlack), nil
+}
+
 func (g *GemHandler) onS5F1(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	if msg == nil {
 		return g.buildS5F2(1), nil
@@ -507,6 +682,14 @@ func (g *GemHandler) onS2F41(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	return g.buildS2F42(ack), nil
 }
 
+func (g *GemHandler) buildS1F1() *ast.DataMessage {
+	direction := "H->E"
+	if g.deviceType == DeviceEquipment {
+		direction = "H<-E"
+	}
+	return ast.NewDataMessage("AreYouThere", 1, 1, 1, direction, ast.NewListNode())
+}
+
 func (g *GemHandler) buildS1F13() *ast.DataMessage {
 	return ast.NewDataMessage("EstablishCommRequest", 1, 13, 1, "H->E", ast.NewListNode())
 }
@@ -537,6 +720,24 @@ func (g *GemHandler) buildS1F2Equipment() *ast.DataMessage {
 	sr := ast.NewASCIINode(g.softrev)
 	body := ast.NewListNode(ast.NewListNode(md, sr))
 	return ast.NewDataMessage("AreYouThereAck", 1, 2, 0, "H<-E", body)
+}
+
+func (g *GemHandler) buildS1F16(oflack int) *ast.DataMessage {
+	body := ast.NewListNode(ast.NewBinaryNode(oflack))
+	direction := "H<-E"
+	if g.deviceType == DeviceHost {
+		direction = "H->E"
+	}
+	return ast.NewDataMessage("OfflineRequestAck", 1, 16, 0, direction, body)
+}
+
+func (g *GemHandler) buildS1F18(onlack int) *ast.DataMessage {
+	body := ast.NewListNode(ast.NewBinaryNode(onlack))
+	direction := "H<-E"
+	if g.deviceType == DeviceHost {
+		direction = "H->E"
+	}
+	return ast.NewDataMessage("OnlineRequestAck", 1, 18, 0, direction, body)
 }
 
 func readCommAck(msg *ast.DataMessage) int {

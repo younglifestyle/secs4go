@@ -43,10 +43,11 @@ const (
 
 // LoggingConfig controls HSMS message logging behaviour.
 type LoggingConfig struct {
-	Enabled                bool
-	Mode                   LoggingMode
-	IncludeControlMessages bool
-	Writer                 io.Writer
+	Enabled                     bool
+	Mode                        LoggingMode
+	IncludeControlMessages      bool
+	ExcludedControlMessageTypes map[string]struct{}
+	Writer                      io.Writer
 }
 
 type DataMessageHandler func(*ast.DataMessage) (*ast.DataMessage, error)
@@ -352,7 +353,7 @@ func (p *HsmsProtocol) activeConnect() error {
 
 // handleHsmsRequests processes HSMS control messages.
 func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
-	p.logger.Println("control message:", message.Type())
+	p.logControlMessage("IN", message)
 
 	systemID := binary.BigEndian.Uint32(message.SystemBytes())
 
@@ -485,6 +486,8 @@ func (p *HsmsProtocol) invokeHandler(handler DataMessageHandler, msg *ast.DataMe
 		response = response.SetWaitBit(false)
 	}
 
+	p.logDataMessage("OUT", response)
+
 	if err := p.hsmsConnection.Send(response.ToBytes()); err != nil {
 		p.logger.Printf("send response S%02dF%02d failed: %v", response.StreamCode(), response.FunctionCode(), err)
 	}
@@ -492,32 +495,37 @@ func (p *HsmsProtocol) invokeHandler(handler DataMessageHandler, msg *ast.DataMe
 
 func (p *HsmsProtocol) logDataMessage(direction string, message *ast.DataMessage) {
 	cfg := p.loggingConfig()
-	if !cfg.Enabled {
+	if !cfg.Enabled || cfg.Writer == nil {
 		return
 	}
 
+	logSML := cfg.Mode == LoggingModeUnset || cfg.Mode == LoggingModeSML || cfg.Mode == LoggingModeBoth
+	logBinary := cfg.Mode == LoggingModeBinary || cfg.Mode == LoggingModeBoth
+
 	var builder strings.Builder
-	if cfg.Mode == LoggingModeSML || cfg.Mode == LoggingModeBoth {
-		builder.WriteString(fmt.Sprintf("[%s][DATA]%s", direction, message.String()))
-	} else {
-		builder.WriteString(fmt.Sprintf("[%s][DATA] %s", direction, message.Header()))
+	if logSML {
+		fmt.Fprintf(&builder, "[%s][DATA][SML]\n%s", direction, message.String())
 	}
-	if cfg.Mode == LoggingModeBinary || cfg.Mode == LoggingModeBoth {
+	if logBinary {
 		if raw := message.ToBytes(); len(raw) > 0 {
-			builder.WriteString(fmt.Sprintf("[%s][DATA][HEX] %X", direction, raw))
+			if builder.Len() > 0 {
+				builder.WriteByte('\n')
+			}
+			fmt.Fprintf(&builder, "[%s][DATA][BIN] %X", direction, raw)
 		}
 	}
 	if builder.Len() == 0 {
 		return
 	}
+	builder.WriteByte('\n')
 	p.logWriteMu.Lock()
-	fmt.Fprint(cfg.Writer, builder.String())
+	_, _ = cfg.Writer.Write([]byte(builder.String()))
 	p.logWriteMu.Unlock()
 }
 
 func (p *HsmsProtocol) logControlMessage(direction string, message ast.HSMSMessage) {
 	cfg := p.loggingConfig()
-	if !cfg.Enabled || !cfg.IncludeControlMessages {
+	if !cfg.Enabled || !cfg.IncludeControlMessages || cfg.Writer == nil {
 		return
 	}
 	ctrl, ok := message.(*ast.ControlMessage)
@@ -525,15 +533,33 @@ func (p *HsmsProtocol) logControlMessage(direction string, message ast.HSMSMessa
 		return
 	}
 
-	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("[%s][CTRL] %s session=%d status=%d", direction, ctrl.Type(), ctrl.SessionID(), ctrl.Status()))
-	if cfg.Mode == LoggingModeBinary || cfg.Mode == LoggingModeBoth {
-		if raw := message.ToBytes(); len(raw) > 0 {
-			builder.WriteString(fmt.Sprintf("[%s][CTRL][HEX] %X", direction, raw))
+	if len(cfg.ExcludedControlMessageTypes) > 0 {
+		if _, skip := cfg.ExcludedControlMessageTypes[strings.ToLower(ctrl.Type())]; skip {
+			return
 		}
 	}
+
+	logSML := cfg.Mode == LoggingModeUnset || cfg.Mode == LoggingModeSML || cfg.Mode == LoggingModeBoth
+	logBinary := cfg.Mode == LoggingModeBinary || cfg.Mode == LoggingModeBoth
+
+	var builder strings.Builder
+	if logSML {
+		fmt.Fprintf(&builder, "[%s][CTRL] %s session=%d status=%d system=%X", direction, ctrl.Type(), ctrl.SessionID(), ctrl.Status(), ctrl.SystemBytes())
+	}
+	if logBinary {
+		if raw := message.ToBytes(); len(raw) > 0 {
+			if builder.Len() > 0 {
+				builder.WriteByte('\n')
+			}
+			fmt.Fprintf(&builder, "[%s][CTRL][BIN] %X", direction, raw)
+		}
+	}
+	if builder.Len() == 0 {
+		return
+	}
+	builder.WriteByte('\n')
 	p.logWriteMu.Lock()
-	fmt.Fprint(cfg.Writer, builder.String())
+	_, _ = cfg.Writer.Write([]byte(builder.String()))
 	p.logWriteMu.Unlock()
 }
 
@@ -594,6 +620,8 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 			continue
 		}
 
+		p.logDataMessage("IN", dataMessage)
+
 		if p.connectionState.CurrentState() != StateConnectedSelected {
 			p.logger.Println("received message while not selected")
 			p.hsmsConnection.sendReject(message, 4)
@@ -635,6 +663,8 @@ func (p *HsmsProtocol) SendDataMessage(message *ast.DataMessage) error {
 		outgoing = outgoing.SetWaitBit(false)
 	}
 
+	p.logDataMessage("OUT", outgoing)
+
 	return p.hsmsConnection.Send(outgoing.ToBytes())
 }
 
@@ -655,6 +685,8 @@ func (p *HsmsProtocol) SendAndWait(message *ast.DataMessage) (*ast.DataMessage, 
 	if outgoing.WaitBit() == "optional" {
 		outgoing = outgoing.SetWaitBit(true)
 	}
+
+	p.logDataMessage("OUT", outgoing)
 
 	if err := p.hsmsConnection.Send(outgoing.ToBytes()); err != nil {
 		return nil, err
@@ -692,6 +724,8 @@ func (p *HsmsProtocol) SendResponse(message *ast.DataMessage, systemBytes []byte
 	if outgoing.WaitBit() == "optional" {
 		outgoing = outgoing.SetWaitBit(false)
 	}
+
+	p.logDataMessage("OUT", outgoing)
 
 	return p.hsmsConnection.Send(outgoing.ToBytes())
 }
@@ -731,6 +765,20 @@ func (p *HsmsProtocol) ConfigureLogging(cfg LoggingConfig) {
 		}
 	} else {
 		cfg.Writer = nil
+	}
+
+	if len(cfg.ExcludedControlMessageTypes) > 0 {
+		filtered := make(map[string]struct{}, len(cfg.ExcludedControlMessageTypes))
+		for key := range cfg.ExcludedControlMessageTypes {
+			normalized := strings.ToLower(strings.TrimSpace(key))
+			if normalized == "" {
+				continue
+			}
+			filtered[normalized] = struct{}{}
+		}
+		cfg.ExcludedControlMessageTypes = filtered
+	} else {
+		cfg.ExcludedControlMessageTypes = nil
 	}
 
 	p.logCfg = cfg
