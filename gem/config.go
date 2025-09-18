@@ -1,6 +1,7 @@
 package gem
 
 import (
+	"io"
 	"time"
 
 	"github.com/younglifestyle/secs4go/hsms"
@@ -16,9 +17,41 @@ type Options struct {
 	EstablishCommunicationWait time.Duration
 	InitialControlState        ControlState
 	InitialOnlineMode          OnlineControlMode
+	Logging                    LoggingOptions
+}
+
+// LoggingOptions configures HSMS/GEM message logging.
+type LoggingOptions struct {
+	Enabled                bool
+	Mode                   hsms.LoggingMode
+	IncludeControlMessages bool
+	Writer                 io.Writer
+}
+
+func (o *LoggingOptions) applyDefaults() {
+	if !o.Enabled {
+		return
+	}
+	if o.Mode == hsms.LoggingModeUnset {
+		o.Mode = hsms.LoggingModeSML
+	}
+}
+
+func (o LoggingOptions) toConfig(defaultWriter io.Writer) hsms.LoggingConfig {
+	cfg := hsms.LoggingConfig{
+		Enabled:                o.Enabled,
+		Mode:                   o.Mode,
+		IncludeControlMessages: o.IncludeControlMessages,
+		Writer:                 o.Writer,
+	}
+	if cfg.Writer == nil {
+		cfg.Writer = defaultWriter
+	}
+	return cfg
 }
 
 func (o *Options) applyDefaults() {
+	o.Logging.applyDefaults()
 	if o.MDLN == "" {
 		if o.DeviceType == DeviceEquipment {
 			o.MDLN = "secs4go"

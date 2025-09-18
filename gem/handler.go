@@ -21,6 +21,10 @@ var (
 )
 
 // Events exposes GEM handler callbacks.
+
+// StreamFunctionHandler mirrors the HSMS data message handler signature.
+type StreamFunctionHandler func(*ast.DataMessage) (*ast.DataMessage, error)
+
 type Events struct {
 	HandlerCommunicating  *common.Event
 	AlarmReceived         *common.Event
@@ -126,6 +130,8 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 
 	handler.state.setState(CommunicationStateNotCommunicating)
 
+	handler.protocol.ConfigureLogging(opts.Logging.toConfig(handler.logger.Writer()))
+
 	handler.protocol.RegisterHandler(1, 1, handler.onS1F1)
 	handler.protocol.RegisterHandler(1, 13, handler.onS1F13)
 	handler.protocol.RegisterHandler(1, 14, handler.onS1F14)
@@ -156,6 +162,16 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 // Events returns GEM handler event hooks.
 func (g *GemHandler) Events() Events {
 	return g.events
+}
+
+// RegisterStreamFunctionHandler installs or removes a handler for a specific stream/function.
+func (g *GemHandler) RegisterStreamFunctionHandler(stream, function int, handler StreamFunctionHandler) {
+	g.protocol.RegisterHandler(stream, function, hsms.DataMessageHandler(handler))
+}
+
+// RegisterDefaultStreamHandler sets a fallback invoked when no specific handler matches.
+func (g *GemHandler) RegisterDefaultStreamHandler(handler StreamFunctionHandler) {
+	g.protocol.RegisterDefaultHandler(hsms.DataMessageHandler(handler))
 }
 
 // Enable activates the underlying HSMS protocol and starts communication monitoring.

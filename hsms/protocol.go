@@ -5,8 +5,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +31,23 @@ var (
 	// ErrTimeout indicates the remote side did not answer within the configured timeout.
 	ErrTimeout = errors.New("hsms: timeout waiting for response")
 )
+
+type LoggingMode int
+
+const (
+	LoggingModeUnset LoggingMode = iota
+	LoggingModeSML
+	LoggingModeBinary
+	LoggingModeBoth
+)
+
+// LoggingConfig controls HSMS message logging behaviour.
+type LoggingConfig struct {
+	Enabled                bool
+	Mode                   LoggingMode
+	IncludeControlMessages bool
+	Writer                 io.Writer
+}
 
 type DataMessageHandler func(*ast.DataMessage) (*ast.DataMessage, error)
 
@@ -57,6 +76,10 @@ type HsmsProtocol struct {
 
 	queueMu      sync.RWMutex
 	systemQueues map[uint32]*utils.Deque
+
+	logMu      sync.RWMutex
+	logCfg     LoggingConfig
+	logWriteMu sync.Mutex
 
 	handlerMu      sync.RWMutex
 	handlers       map[string]DataMessageHandler
@@ -89,6 +112,8 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 		handlers:      make(map[string]DataMessageHandler),
 		disconnectFlg: make(chan struct{}, 1),
 	}
+	h.logCfg.Writer = logger.Writer()
+	h.logCfg.Mode = LoggingModeSML
 
 	h.connectionState = NewConnectionStateMachine(fsm.Callbacks{
 		"leave_NOT-CONNECTED":      h.onStateConnect,
@@ -465,6 +490,53 @@ func (p *HsmsProtocol) invokeHandler(handler DataMessageHandler, msg *ast.DataMe
 	}
 }
 
+func (p *HsmsProtocol) logDataMessage(direction string, message *ast.DataMessage) {
+	cfg := p.loggingConfig()
+	if !cfg.Enabled {
+		return
+	}
+
+	var builder strings.Builder
+	if cfg.Mode == LoggingModeSML || cfg.Mode == LoggingModeBoth {
+		builder.WriteString(fmt.Sprintf("[%s][DATA]%s", direction, message.String()))
+	} else {
+		builder.WriteString(fmt.Sprintf("[%s][DATA] %s", direction, message.Header()))
+	}
+	if cfg.Mode == LoggingModeBinary || cfg.Mode == LoggingModeBoth {
+		if raw := message.ToBytes(); len(raw) > 0 {
+			builder.WriteString(fmt.Sprintf("[%s][DATA][HEX] %X", direction, raw))
+		}
+	}
+	if builder.Len() == 0 {
+		return
+	}
+	p.logWriteMu.Lock()
+	fmt.Fprint(cfg.Writer, builder.String())
+	p.logWriteMu.Unlock()
+}
+
+func (p *HsmsProtocol) logControlMessage(direction string, message ast.HSMSMessage) {
+	cfg := p.loggingConfig()
+	if !cfg.Enabled || !cfg.IncludeControlMessages {
+		return
+	}
+	ctrl, ok := message.(*ast.ControlMessage)
+	if !ok {
+		return
+	}
+
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("[%s][CTRL] %s session=%d status=%d", direction, ctrl.Type(), ctrl.SessionID(), ctrl.Status()))
+	if cfg.Mode == LoggingModeBinary || cfg.Mode == LoggingModeBoth {
+		if raw := message.ToBytes(); len(raw) > 0 {
+			builder.WriteString(fmt.Sprintf("[%s][CTRL][HEX] %X", direction, raw))
+		}
+	}
+	p.logWriteMu.Lock()
+	fmt.Fprint(cfg.Writer, builder.String())
+	p.logWriteMu.Unlock()
+}
+
 func (p *HsmsProtocol) handleDataMessage(message *ast.DataMessage) {
 	handler := p.lookupHandler(message.StreamCode(), message.FunctionCode())
 	if handler != nil {
@@ -643,6 +715,32 @@ func (p *HsmsProtocol) RegisterDefaultHandler(handler DataMessageHandler) {
 	p.handlerMu.Lock()
 	p.defaultHandler = handler
 	p.handlerMu.Unlock()
+}
+
+// ConfigureLogging enables or updates message logging behaviour.
+func (p *HsmsProtocol) ConfigureLogging(cfg LoggingConfig) {
+	p.logMu.Lock()
+	defer p.logMu.Unlock()
+
+	if cfg.Enabled {
+		if cfg.Mode == LoggingModeUnset {
+			cfg.Mode = LoggingModeSML
+		}
+		if cfg.Writer == nil {
+			cfg.Writer = p.logger.Writer()
+		}
+	} else {
+		cfg.Writer = nil
+	}
+
+	p.logCfg = cfg
+}
+
+func (p *HsmsProtocol) loggingConfig() LoggingConfig {
+	p.logMu.RLock()
+	cfg := p.logCfg
+	p.logMu.RUnlock()
+	return cfg
 }
 
 // Connected reports whether the underlying HSMS session is established.
