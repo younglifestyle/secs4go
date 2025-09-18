@@ -285,3 +285,13 @@ func (msg *ControlMessage) ToBytes() []byte {
 func (msg *ControlMessage) SystemBytes() []byte {
 	return msg.header[6:10]
 }
+
+// SessionID returns the session identifier encoded in the control message header.
+func (msg *ControlMessage) SessionID() uint16 {
+	return uint16(msg.header[0])<<8 | uint16(msg.header[1])
+}
+
+// Status returns the status byte carried by control messages such as select.rsp.
+func (msg *ControlMessage) Status() byte {
+	return msg.header[3]
+}

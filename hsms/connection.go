@@ -1,6 +1,8 @@
 package hsms
 
 import (
+	"fmt"
+
 	link "github.com/younglifestyle/secs4go"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 )
@@ -112,9 +114,22 @@ func (c *HsmsConnection) sendSelectReq() error {
 		return err
 	}
 
-	if _, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout()); err != nil {
+	resp, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout())
+	if err != nil {
 		c.hp.logger.Println("timeout waiting select.rsp:", err)
 		return err
+	}
+
+	ctrl, ok := resp.(ast.HSMSMessage)
+	if !ok {
+		return fmt.Errorf("unexpected response type %T", resp)
+	}
+	controlMsg, ok := ctrl.(*ast.ControlMessage)
+	if !ok {
+		return fmt.Errorf("unexpected control response %T", ctrl)
+	}
+	if controlMsg.Status() != 0 {
+		return fmt.Errorf("select.rsp returned status %d", controlMsg.Status())
 	}
 
 	return nil
