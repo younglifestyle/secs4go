@@ -2,6 +2,7 @@ package gem
 
 import (
 	"io"
+	"strings"
 	"time"
 
 	"github.com/younglifestyle/secs4go/hsms"
@@ -22,10 +23,11 @@ type Options struct {
 
 // LoggingOptions configures HSMS/GEM message logging.
 type LoggingOptions struct {
-	Enabled                bool
-	Mode                   hsms.LoggingMode
-	IncludeControlMessages bool
-	Writer                 io.Writer
+	Enabled                    bool
+	Mode                       hsms.LoggingMode
+	IncludeControlMessages     bool
+	ExcludeControlMessageTypes []string
+	Writer                     io.Writer
 }
 
 func (o *LoggingOptions) applyDefaults() {
@@ -39,10 +41,21 @@ func (o *LoggingOptions) applyDefaults() {
 
 func (o LoggingOptions) toConfig(defaultWriter io.Writer) hsms.LoggingConfig {
 	cfg := hsms.LoggingConfig{
-		Enabled:                o.Enabled,
-		Mode:                   o.Mode,
-		IncludeControlMessages: o.IncludeControlMessages,
-		Writer:                 o.Writer,
+		Enabled:                     o.Enabled,
+		Mode:                        o.Mode,
+		IncludeControlMessages:      o.IncludeControlMessages,
+		ExcludedControlMessageTypes: make(map[string]struct{}),
+		Writer:                      o.Writer,
+	}
+	for _, msgType := range o.ExcludeControlMessageTypes {
+		typeKey := strings.ToLower(strings.TrimSpace(msgType))
+		if typeKey == "" {
+			continue
+		}
+		cfg.ExcludedControlMessageTypes[typeKey] = struct{}{}
+	}
+	if len(cfg.ExcludedControlMessageTypes) == 0 {
+		cfg.ExcludedControlMessageTypes = nil
 	}
 	if cfg.Writer == nil {
 		cfg.Writer = defaultWriter

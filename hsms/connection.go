@@ -60,6 +60,7 @@ func (c *HsmsConnection) Close() error {
 
 func (c *HsmsConnection) sendRejectRsp(packet ast.HSMSMessage, reasonCode byte) {
 	rejectReq := ast.NewHSMSMessageRejectReqFromMsg(packet, reasonCode)
+	c.hp.logControlMessage("OUT", rejectReq)
 	if err := c.connection.Send(rejectReq.ToBytes()); err != nil {
 		c.hp.logger.Println("send reject rsp error:", err)
 	}
@@ -70,7 +71,9 @@ func (c *HsmsConnection) sendLinktestReq() {
 	queue := c.hp.createQueue(systemID)
 	defer c.hp.removeQueue(systemID)
 
-	if err := c.connection.Send(ast.NewHSMSMessageLinktestReq(c.hp.encodeSystemID(systemID)).ToBytes()); err != nil {
+	message := ast.NewHSMSMessageLinktestReq(c.hp.encodeSystemID(systemID))
+	c.hp.logControlMessage("OUT", message)
+	if err := c.connection.Send(message.ToBytes()); err != nil {
 		c.hp.logger.Println("send linktest.req error:", err)
 		return
 	}
@@ -81,25 +84,33 @@ func (c *HsmsConnection) sendLinktestReq() {
 }
 
 func (c *HsmsConnection) sendDeselectRsp(message ast.HSMSMessage, selectStatus byte) {
-	if err := c.connection.Send(ast.NewHSMSMessageDeselectRsp(message, selectStatus).ToBytes()); err != nil {
+	response := ast.NewHSMSMessageDeselectRsp(message, selectStatus)
+	c.hp.logControlMessage("OUT", response)
+	if err := c.connection.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Println("send deselect.rsp error:", err)
 	}
 }
 
 func (c *HsmsConnection) sendSelectRsp(message ast.HSMSMessage, selectStatus byte) {
-	if err := c.connection.Send(ast.NewHSMSMessageSelectRsp(message, selectStatus).ToBytes()); err != nil {
+	response := ast.NewHSMSMessageSelectRsp(message, selectStatus)
+	c.hp.logControlMessage("OUT", response)
+	if err := c.connection.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Println("send select.rsp error:", err)
 	}
 }
 
 func (c *HsmsConnection) sendLinkTestRsp(message ast.HSMSMessage) {
-	if err := c.connection.Send(ast.NewHSMSMessageLinktestRsp(message).ToBytes()); err != nil {
+	response := ast.NewHSMSMessageLinktestRsp(message)
+	c.hp.logControlMessage("OUT", response)
+	if err := c.connection.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Println("send linktest.rsp error:", err)
 	}
 }
 
 func (c *HsmsConnection) sendReject(message ast.HSMSMessage, reasonCode byte) {
-	if err := c.connection.Send(ast.NewHSMSMessageRejectReqFromMsg(message, reasonCode).ToBytes()); err != nil {
+	reject := ast.NewHSMSMessageRejectReqFromMsg(message, reasonCode)
+	c.hp.logControlMessage("OUT", reject)
+	if err := c.connection.Send(reject.ToBytes()); err != nil {
 		c.hp.logger.Println("send reject.req error:", err)
 	}
 }
@@ -109,7 +120,9 @@ func (c *HsmsConnection) sendSelectReq() error {
 	queue := c.hp.createQueue(systemID)
 	defer c.hp.removeQueue(systemID)
 
-	if err := c.connection.Send(ast.NewHSMSMessageSelectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID)).ToBytes()); err != nil {
+	request := ast.NewHSMSMessageSelectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID))
+	c.hp.logControlMessage("OUT", request)
+	if err := c.connection.Send(request.ToBytes()); err != nil {
 		c.hp.logger.Println("send select.req error:", err)
 		return err
 	}
