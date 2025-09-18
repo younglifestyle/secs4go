@@ -54,6 +54,13 @@ func runHost(address string, port, session int) {
 	handler.WaitForCommunicating(0)
 	log.Println("Host in COMMUNICATING state")
 
+	log.Println("Resetting previous report definitions ...")
+	if ack, err := handler.DefineReports(); err != nil {
+		log.Fatalf("DefineReports (clear): %v", err)
+	} else if ack != 0 {
+		log.Printf("DefineReports (clear) returned DRACK=%d", ack)
+	}
+
 	log.Println("Connected. Defining report set ...")
 	if ack, err := handler.DefineReports(gem.ReportDefinitionRequest{
 		ReportID: 4001,
@@ -148,6 +155,9 @@ func runEquipment(address string, port, session int) {
 	for {
 		select {
 		case <-ticker.C:
+			if handler.State() != gem.CommunicationStateCommunicating {
+				continue
+			}
 			if err := handler.TriggerCollectionEvent(int64(3001)); err != nil {
 				log.Printf("trigger collection event: %v", err)
 			}

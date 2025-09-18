@@ -333,6 +333,26 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 
 	switch message.Type() {
 	case hsms.SelectReqStr:
+		ctrl, ok := message.(*ast.ControlMessage)
+		if !ok {
+			p.logger.Println("received malformed select.req")
+			p.hsmsConnection.sendReject(message, 2)
+			return
+		}
+
+		receivedSession := ctrl.SessionID()
+		expectedSession := uint16(p.sessionID)
+		if receivedSession != expectedSession {
+			p.logger.Printf("select.req session mismatch: got %d expected %d", receivedSession, expectedSession)
+			p.hsmsConnection.sendSelectRsp(message, 1)
+			_ = p.hsmsConnection.Close()
+			p.connected.Store(false)
+			if err := p.connectionState.Disconnect(); err != nil {
+				p.logger.Println("change state to NOT-CONNECTED error:", err)
+			}
+			return
+		}
+
 		if !p.connected.Load() {
 			p.hsmsConnection.sendReject(message, 4)
 			return
@@ -343,11 +363,25 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 
 	case hsms.SelectRspStr:
-		if err := p.connectionState.Select(); err != nil {
-			p.logger.Println("change state to SELECTED error:", err)
-		}
 		if queue, ok := p.fetchQueue(systemID); ok {
 			queue.Put(message)
+		}
+		ctrl, ok := message.(*ast.ControlMessage)
+		if !ok {
+			p.logger.Println("received malformed select.rsp")
+			return
+		}
+		if ctrl.Status() != 0 {
+			p.logger.Printf("select.rsp returned status %d", ctrl.Status())
+			p.connected.Store(false)
+			if err := p.connectionState.Disconnect(); err != nil {
+				p.logger.Println("change state to NOT-CONNECTED error:", err)
+			}
+			_ = p.hsmsConnection.Close()
+			return
+		}
+		if err := p.connectionState.Select(); err != nil {
+			p.logger.Println("change state to SELECTED error:", err)
 		}
 
 	case hsms.DeselectReqStr:
