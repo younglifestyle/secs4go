@@ -835,7 +835,6 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 
 		if p.connectionState.CurrentState() != StateConnectedSelected {
 			p.logger.Println("received message while not selected")
-			p.hsmsConnection.sendReject(message, 4)
 			continue
 		}
 
