@@ -9,16 +9,20 @@ import (
 )
 
 const (
-	drAckOK             = 0
-	drAckRPTIDRedefined = 1
-	drAckVIDUnknown     = 2
+	drAckOK             = 0 // Accept
+	drAckInsufficient   = 1 // Denied, insufficient space
+	drAckInvalidFormat  = 2 // Denied, invalid format
+	drAckRPTIDRedefined = 3 // Denied, RPTID already defined
+	drAckVIDUnknown     = 4 // Denied, VID doesn't exist
 )
 
 const (
-	lrAckOK           = 0
-	lrAckCEIDUnknown  = 1
-	lrAckRPTIDUnknown = 2
-	lrAckCEIDLinked   = 3
+	lrAckOK            = 0 // Acknowledge
+	lrAckInsufficient  = 1 // Denied, insufficient space
+	lrAckInvalidFormat = 2 // Denied, invalid format
+	lrAckCEIDLinked    = 3 // Denied, CEID already linked
+	lrAckCEIDUnknown   = 4 // Denied, CEID doesn't exist
+	lrAckRPTIDUnknown  = 5 // Denied, RPTID doesn't exist
 )
 
 const (
@@ -198,9 +202,8 @@ func (g *GemHandler) onS2F33(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	reports, err := parseReportDefinitionList(msg)
 	if err != nil {
 		g.logger.Println("failed to parse S2F33:", err)
-		return g.buildS2F34(drAckVIDUnknown), nil
+		return g.buildS2F34(drAckInvalidFormat), nil
 	}
-
 	ack := g.handleReportDefinitions(reports)
 	return g.buildS2F34(ack), nil
 }
@@ -238,7 +241,7 @@ func (g *GemHandler) handleReportDefinitions(reports []reportDefinitionMessage) 
 		}
 		definition, err := newReportDefinition(rpt.id.raw, rpt.vids)
 		if err != nil {
-			return drAckVIDUnknown
+			return drAckInvalidFormat
 		}
 		g.reports[rpt.id.key] = definition
 	}
@@ -274,7 +277,7 @@ func (g *GemHandler) onS2F35(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	links, err := parseEventReportLinkList(msg)
 	if err != nil {
 		g.logger.Println("failed to parse S2F35:", err)
-		return g.buildS2F36(lrAckCEIDUnknown), nil
+		return g.buildS2F36(lrAckInvalidFormat), nil
 	}
 
 	ack := g.handleEventReportLinks(links)
