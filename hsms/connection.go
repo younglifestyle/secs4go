@@ -147,3 +147,34 @@ func (c *HsmsConnection) sendSelectReq() error {
 
 	return nil
 }
+
+func (c *HsmsConnection) sendDeselectReq() error {
+	systemID := c.hp.getNextSystemCounter()
+	queue := c.hp.createQueue(systemID)
+	defer c.hp.removeQueue(systemID)
+
+	if err := c.connection.Send(ast.NewHSMSMessageDeselectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID)).ToBytes()); err != nil {
+		c.hp.logger.Println("send deselect.req error:", err)
+		return err
+	}
+
+	resp, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout())
+	if err != nil {
+		c.hp.logger.Println("timeout waiting deselect.rsp:", err)
+		return err
+	}
+
+	ctrl, ok := resp.(ast.HSMSMessage)
+	if !ok {
+		return fmt.Errorf("unexpected response type %T", resp)
+	}
+	controlMsg, ok := ctrl.(*ast.ControlMessage)
+	if !ok {
+		return fmt.Errorf("unexpected control response %T", ctrl)
+	}
+	if controlMsg.Status() != 0 {
+		return fmt.Errorf("deselect.rsp returned status %d", controlMsg.Status())
+	}
+
+	return nil
+}

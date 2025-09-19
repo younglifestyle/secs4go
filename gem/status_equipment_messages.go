@@ -85,7 +85,8 @@ func (g *GemHandler) buildS2F15(updates []EquipmentConstantUpdate) (*ast.DataMes
 }
 
 func (g *GemHandler) buildS2F16(ack int) *ast.DataMessage {
-	body := ast.NewListNode(ast.NewBinaryNode(ack))
+	//body := ast.NewListNode(ast.NewBinaryNode(ack))
+	body := ast.NewBinaryNode(ack)
 	return ast.NewDataMessage("EquipmentConstantAcknowledge", 2, 16, 0, "H<-E", body)
 }
 
@@ -130,7 +131,8 @@ func (g *GemHandler) buildS2F33(defs []ReportDefinitionRequest) (*ast.DataMessag
 }
 
 func (g *GemHandler) buildS2F34(ack int) *ast.DataMessage {
-	body := ast.NewListNode(ast.NewBinaryNode(ack))
+	//body := ast.NewListNode(ast.NewBinaryNode(ack))
+	body := ast.NewBinaryNode(ack)
 	return ast.NewDataMessage("DefineReportAcknowledge", 2, 34, 0, "H<-E", body)
 }
 
@@ -157,7 +159,8 @@ func (g *GemHandler) buildS2F35(links []EventReportLinkRequest) (*ast.DataMessag
 }
 
 func (g *GemHandler) buildS2F36(ack int) *ast.DataMessage {
-	body := ast.NewListNode(ast.NewBinaryNode(ack))
+	//body := ast.NewListNode(ast.NewBinaryNode(ack))
+	body := ast.NewBinaryNode(ack)
 	return ast.NewDataMessage("LinkEventReportAcknowledge", 2, 36, 0, "H<-E", body)
 }
 
@@ -171,7 +174,8 @@ func (g *GemHandler) buildS2F37(enable bool, ceids []idInfo) *ast.DataMessage {
 }
 
 func (g *GemHandler) buildS2F38(ack int) *ast.DataMessage {
-	body := ast.NewListNode(ast.NewBinaryNode(ack))
+	//body := ast.NewListNode(ast.NewBinaryNode(ack))
+	body := ast.NewBinaryNode(ack)
 	return ast.NewDataMessage("EnableEventReportAcknowledge", 2, 38, 0, "H<-E", body)
 }
 
@@ -185,7 +189,7 @@ func (g *GemHandler) buildS6F11(dataID int, ceNode ast.ItemNode, reports []ast.I
 }
 
 func (g *GemHandler) buildS6F12(ack int) *ast.DataMessage {
-	body := ast.NewListNode(ast.NewBinaryNode(ack))
+	body := ast.NewBinaryNode(ack)
 	return ast.NewDataMessage("EventReportAcknowledge", 6, 12, 0, "H<-E", body)
 }
 
@@ -213,7 +217,8 @@ func (g *GemHandler) buildS7F3(ppid idInfo, programBody string) *ast.DataMessage
 }
 
 func (g *GemHandler) buildS7F4(ack int) *ast.DataMessage {
-	body := ast.NewListNode(ast.NewBinaryNode(ack))
+	//body := ast.NewListNode(ast.NewBinaryNode(ack))
+	body := ast.NewBinaryNode(ack)
 	return ast.NewDataMessage("ProcessProgramAcknowledge", 7, 4, 0, "H<-E", body)
 }
 
@@ -221,12 +226,16 @@ func (g *GemHandler) buildS7F5(ppid idInfo) *ast.DataMessage {
 	return ast.NewDataMessage("ProcessProgramRequest", 7, 5, 1, "H->E", ppid.node)
 }
 
+// --- S7F6: ProcessProgramData ---
+// 按标准: <PPID><PPBODY><ACKC6>
+// PPBODY 可以是 ASCII 或 Binary。多数 GEM host 更偏好 Binary。
 func (g *GemHandler) buildS7F6(ppid ast.ItemNode, programBody string, ack int) *ast.DataMessage {
 	ppidNode := ppid
 	if ppidNode == nil {
 		ppidNode = ast.NewEmptyItemNode()
 	}
-	bodyNode := ast.NewASCIINode(programBody)
+	//bodyNode := ast.NewASCIINode(programBody)
+	bodyNode := ast.NewBinaryNode(programBody)
 	if ack != 0 {
 		bodyNode = ast.NewASCIINode("")
 	}

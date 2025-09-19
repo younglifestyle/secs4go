@@ -133,7 +133,7 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		controlAttemptInProgress: atomic.NewBool(false),
 	}
 
-	handler.state.setState(CommunicationStateNotCommunicating)
+	handler.setCommunicationState(CommunicationStateNotCommunicating)
 
 	handler.protocol.ConfigureLogging(opts.Logging.toConfig(handler.logger.Writer()))
 
@@ -208,6 +208,8 @@ func (g *GemHandler) Disable() {
 		return
 	}
 
+	g.setCommunicationState(CommunicationStateNotCommunicating)
+
 	g.stopMu.Lock()
 	if g.stopCh != nil {
 		close(g.stopCh)
@@ -243,7 +245,13 @@ func (g *GemHandler) SwitchControlOnline() error {
 		return ErrOperationNotSupported
 	}
 	return g.transitionControl(func(sm *ControlStateMachine) error {
-		return sm.SwitchOnline()
+		if sm.State() == ControlStateEquipmentOffline || sm.State() == ControlStateHostOffline {
+			return sm.SwitchOnline()
+		}
+		if sm.State() == ControlStateAttemptOnline {
+			g.initiateAttemptOnline()
+		}
+		return nil
 	})
 }
 
@@ -253,7 +261,10 @@ func (g *GemHandler) SwitchControlOffline() error {
 		return ErrOperationNotSupported
 	}
 	return g.transitionControl(func(sm *ControlStateMachine) error {
-		return sm.SwitchOffline()
+		if sm.IsOnlineState() {
+			return sm.SwitchOffline()
+		}
+		return nil
 	})
 }
 
@@ -340,6 +351,11 @@ func (g *GemHandler) notifyCommunicating() {
 	}
 }
 
+func (g *GemHandler) setCommunicationState(state CommunicationState) {
+	prev := g.state.setState(state)
+	g.onCommunicationStateChanged(prev, state)
+}
+
 func (g *GemHandler) transitionControl(transition func(sm *ControlStateMachine) error) error {
 	if g.control == nil {
 		return ErrOperationNotSupported
@@ -375,6 +391,42 @@ func (g *GemHandler) onControlStateTransition(prev, next ControlState) {
 	switch next {
 	case ControlStateAttemptOnline:
 		g.initiateAttemptOnline()
+	}
+}
+
+func (g *GemHandler) onCommunicationStateChanged(prev, next CommunicationState) {
+	if prev == next {
+		return
+	}
+	if g.control == nil {
+		return
+	}
+
+	switch next {
+	case CommunicationStateCommunicating:
+		g.handshakeInProgress.Store(false)
+		if g.deviceType == DeviceEquipment {
+			state := g.control.State()
+			switch state {
+			case ControlStateEquipmentOffline, ControlStateHostOffline:
+				_ = g.transitionControl(func(sm *ControlStateMachine) error { return sm.SwitchOnline() })
+			case ControlStateAttemptOnline:
+				g.initiateAttemptOnline()
+			}
+		}
+	case CommunicationStateNotCommunicating:
+		g.handshakeInProgress.Store(false)
+		_ = g.transitionControl(func(sm *ControlStateMachine) error {
+			state := sm.State()
+			switch state {
+			case ControlStateOnline, ControlStateOnlineLocal, ControlStateOnlineRemote:
+				return sm.SwitchOffline()
+			case ControlStateAttemptOnline, ControlStateHostOffline:
+				return sm.AttemptOnlineFailEquipmentOffline()
+			default:
+				return nil
+			}
+		})
 	}
 }
 
@@ -427,6 +479,41 @@ func (g *GemHandler) initiateAttemptOnline() {
 	}()
 }
 
+func (g *GemHandler) initiateEstablishCommunication() {
+	if g.deviceType != DeviceEquipment {
+		return
+	}
+	if !g.handshakeInProgress.CompareAndSwap(false, true) {
+		return
+	}
+
+	go func() {
+		defer g.handshakeInProgress.Store(false)
+
+		if g.State() == CommunicationStateCommunicating {
+			return
+		}
+
+		resp, err := g.protocol.SendAndWait(g.buildS1F13Equipment())
+		if err != nil {
+			g.logger.Println("S1F13 request failed:", err)
+			return
+		}
+		if resp == nil {
+			g.logger.Println("S1F13 returned nil response")
+			return
+		}
+
+		ack := readCommAck(resp)
+		if ack != 0 {
+			g.logger.Printf("S1F13 COMMACK=%d", ack)
+			return
+		}
+
+		g.setCommunicating()
+	}()
+}
+
 func (g *GemHandler) monitorLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -448,7 +535,7 @@ func (g *GemHandler) observe() {
 
 	if !g.protocol.Connected() {
 		g.handshakeInProgress.Store(false)
-		g.state.setState(CommunicationStateNotCommunicating)
+		g.setCommunicationState(CommunicationStateNotCommunicating)
 		return
 	}
 
@@ -460,6 +547,17 @@ func (g *GemHandler) observe() {
 			return
 		}
 		g.initiateHandshake()
+		return
+	}
+
+	if g.deviceType == DeviceEquipment && g.protocol.CurrentState() == hsms.StateConnectedSelected {
+		if g.State() == CommunicationStateCommunicating {
+			return
+		}
+		if g.handshakeInProgress.Load() {
+			return
+		}
+		g.initiateEstablishCommunication()
 	}
 }
 
@@ -518,6 +616,7 @@ func (g *GemHandler) setCommunicating() {
 	if prev != CommunicationStateCommunicating {
 		g.notifyCommunicating()
 	}
+	g.onCommunicationStateChanged(prev, CommunicationStateCommunicating)
 }
 
 func (g *GemHandler) onWaitCRATimeout() {
@@ -544,7 +643,7 @@ func (g *GemHandler) onWaitDelayTimeout() {
 		return
 	}
 
-	g.state.setState(CommunicationStateNotCommunicating)
+	g.setCommunicationState(CommunicationStateNotCommunicating)
 }
 
 func (g *GemHandler) onS1F1(_ *ast.DataMessage) (*ast.DataMessage, error) {
@@ -694,6 +793,10 @@ func (g *GemHandler) buildS1F13() *ast.DataMessage {
 	return ast.NewDataMessage("EstablishCommRequest", 1, 13, 1, "H->E", ast.NewListNode())
 }
 
+func (g *GemHandler) buildS1F13Equipment() *ast.DataMessage {
+	return ast.NewDataMessage("EstablishCommRequest", 1, 13, 1, "H<-E", ast.NewListNode())
+}
+
 func (g *GemHandler) buildS1F14Host(commack int) *ast.DataMessage {
 	body := ast.NewListNode(
 		ast.NewBinaryNode(commack),
@@ -705,7 +808,10 @@ func (g *GemHandler) buildS1F14Host(commack int) *ast.DataMessage {
 func (g *GemHandler) buildS1F14Equipment(commack int) *ast.DataMessage {
 	body := ast.NewListNode(
 		ast.NewBinaryNode(commack),
-		ast.NewListNode(),
+		ast.NewListNode(
+			ast.NewASCIINode(g.mdln),
+			ast.NewASCIINode(g.softrev),
+		),
 	)
 	return ast.NewDataMessage("EstablishCommAck", 1, 14, 0, "H<-E", body)
 }
