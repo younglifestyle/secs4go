@@ -2,9 +2,17 @@ package codec
 
 import (
 	"bufio"
-	link "github.com/younglifestyle/secs4go"
 	"io"
+	"time"
+
+	link "github.com/younglifestyle/secs4go"
 )
+
+type deadlineConn interface {
+	SetDeadline(time.Time) error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+}
 
 func Bufio(base link.Protocol, readBuf, writeBuf int) link.Protocol {
 	return &bufioProtocol{
@@ -37,6 +45,9 @@ func (b *bufioProtocol) NewCodec(rw io.ReadWriter) (cc link.Codec, err error) {
 	}
 
 	codec.stream.c, _ = rw.(io.Closer)
+	if dc, ok := rw.(deadlineConn); ok {
+		codec.stream.deadline = dc
+	}
 
 	codec.base, err = b.base.NewCodec(&codec.stream)
 	if err != nil {
@@ -49,8 +60,9 @@ func (b *bufioProtocol) NewCodec(rw io.ReadWriter) (cc link.Codec, err error) {
 type bufioStream struct {
 	io.Reader
 	io.Writer
-	c io.Closer
-	w *bufio.Writer
+	c        io.Closer
+	w        *bufio.Writer
+	deadline deadlineConn
 }
 
 func (s *bufioStream) Flush() error {
@@ -63,6 +75,27 @@ func (s *bufioStream) Flush() error {
 func (s *bufioStream) close() error {
 	if s.c != nil {
 		return s.c.Close()
+	}
+	return nil
+}
+
+func (s *bufioStream) SetReadDeadline(t time.Time) error {
+	if s.deadline != nil {
+		return s.deadline.SetReadDeadline(t)
+	}
+	return nil
+}
+
+func (s *bufioStream) SetWriteDeadline(t time.Time) error {
+	if s.deadline != nil {
+		return s.deadline.SetWriteDeadline(t)
+	}
+	return nil
+}
+
+func (s *bufioStream) SetDeadline(t time.Time) error {
+	if s.deadline != nil {
+		return s.deadline.SetDeadline(t)
 	}
 	return nil
 }
@@ -90,4 +123,12 @@ func (c *bufioCodec) Close() error {
 		return err1
 	}
 	return err2
+}
+
+func (c *bufioCodec) SetReadDeadline(t time.Time) error {
+	return c.stream.SetReadDeadline(t)
+}
+
+func (c *bufioCodec) SetWriteDeadline(t time.Time) error {
+	return c.stream.SetWriteDeadline(t)
 }

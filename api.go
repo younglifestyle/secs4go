@@ -23,6 +23,12 @@ type Codec interface {
 	Close() error
 }
 
+type DeadlineCodec interface {
+	Codec
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+}
+
 type ClearSendChan interface {
 	ClearSendChan(<-chan interface{})
 }
