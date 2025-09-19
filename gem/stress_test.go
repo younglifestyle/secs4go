@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,7 +73,9 @@ func startPairedHandlers(t *testing.T) (*GemHandler, *GemHandler, *equipmentStat
 	hostProtocol := hsms.NewHsmsProtocol("127.0.0.1", port, true, 0x100, "stress-host")
 
 	equipmentProtocol.Timeouts().SetLinktest(60)
+	equipmentProtocol.Timeouts().SetT3ReplyTimeout(10)
 	hostProtocol.Timeouts().SetLinktest(60)
+	hostProtocol.Timeouts().SetT3ReplyTimeout(10)
 
 	equipmentHandler, err := NewGemHandler(Options{
 		Protocol:   equipmentProtocol,
@@ -186,9 +189,9 @@ func TestGemHighThroughputSoak(t *testing.T) {
 	defer cleanup()
 
 	const (
-		goroutines  = 10
-		iterations  = 20
-		soakTimeout = 20 * time.Second
+		goroutines  = 16
+		iterations  = 32000
+		soakTimeout = 30 * time.Second
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -198,6 +201,13 @@ func TestGemHighThroughputSoak(t *testing.T) {
 	defer timeout.Stop()
 
 	errCh := make(chan error, goroutines+1)
+
+	var statusRequests int64
+	var remoteCommands int64
+	var ceidTriggers int64
+
+	start := time.Now()
+	timedOut := false
 
 	var requestWG sync.WaitGroup
 	requestWG.Add(goroutines)
@@ -209,10 +219,24 @@ func TestGemHighThroughputSoak(t *testing.T) {
 					return
 				}
 
+				if host.State() != CommunicationStateCommunicating {
+					if !host.WaitForCommunicating(5 * time.Second) {
+						errCh <- fmt.Errorf("goroutine %d host lost communication", idx)
+						return
+					}
+				}
+				if equipment.State() != CommunicationStateCommunicating {
+					if !equipment.WaitForCommunicating(5 * time.Second) {
+						errCh <- fmt.Errorf("goroutine %d equipment lost communication", idx)
+						return
+					}
+				}
+
 				if _, err := host.RequestStatusVariables(int64(1001)); err != nil {
 					errCh <- fmt.Errorf("goroutine %d status request failed: %w", idx, err)
 					return
 				}
+				atomic.AddInt64(&statusRequests, 1)
 
 				cmd := "START"
 				params := []string{fmt.Sprintf("LOT-%d-%d", idx, j)}
@@ -225,6 +249,7 @@ func TestGemHighThroughputSoak(t *testing.T) {
 					errCh <- fmt.Errorf("goroutine %d remote command %s failed: ack=%d err=%v", idx, cmd, ack, err)
 					return
 				}
+				atomic.AddInt64(&remoteCommands, 1)
 
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -247,6 +272,7 @@ func TestGemHighThroughputSoak(t *testing.T) {
 					errCh <- fmt.Errorf("trigger collection event failed: %w", err)
 					return
 				}
+				atomic.AddInt64(&ceidTriggers, 1)
 			}
 		}
 	}()
@@ -262,17 +288,68 @@ func TestGemHighThroughputSoak(t *testing.T) {
 		close(done)
 	}()
 
+	// ---- 等待完成或超时；超时也打印 summary ----
 	select {
 	case <-done:
+		// 正常完成，继续走下面的校验与 summary
 	case <-timeout.C:
+		timedOut = true
 		cancel()
+
+		// 立刻用当前计数和当前时间打印 summary
+		duration := time.Since(start)
+		sv := atomic.LoadInt64(&statusRequests)
+		rc := atomic.LoadInt64(&remoteCommands)
+		ce := atomic.LoadInt64(&ceidTriggers)
+		totalOps := float64(sv + rc)
+		throughput := totalOps / duration.Seconds()
+
+		t.Logf("[TIMEOUT SUMMARY] goroutines=%d iterations=%d duration=%s status_ops=%d remote_ops=%d ce_triggers=%d throughput=%.1f ops/s",
+			goroutines, iterations, duration, sv, rc, ce, throughput)
+
 		t.Fatalf("soak test timed out after %s", soakTimeout)
 	}
 
+	// ---- 正常完成路径：严格校验并打印 summary ----
 	close(errCh)
 	for err := range errCh {
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
+
+	duration := time.Since(start)
+	expectedOps := int64(goroutines * iterations)
+
+	if got := atomic.LoadInt64(&statusRequests); got != expectedOps {
+		t.Fatalf("status variable request count mismatch: got %d want %d", got, expectedOps)
+	}
+	if got := atomic.LoadInt64(&remoteCommands); got != expectedOps {
+		t.Fatalf("remote command count mismatch: got %d want %d", got, expectedOps)
+	}
+	ceCount := atomic.LoadInt64(&ceidTriggers)
+	if ceCount == 0 {
+		t.Fatalf("collection event triggers not observed")
+	}
+
+	totalOps := float64(statusRequests + remoteCommands)
+	throughput := totalOps / duration.Seconds()
+	t.Logf("soak summary: goroutines=%d iterations=%d duration=%s status_ops=%d remote_ops=%d ce_triggers=%d throughput=%.1f ops/s",
+		goroutines, iterations, duration, statusRequests, remoteCommands, ceCount, throughput)
+
+	_ = timedOut // 仅为避免未使用警告，实际不需要
 }
+
+/*
+status_ops=%d
+已完成的 状态变量读取 操作次数（每次循环调用一次 RequestStatusVariables，等价于完成的 S1F3/S1F11 类请求数）。
+
+remote_ops=%d
+已完成的 远程命令 操作次数（每次循环调用一次 SendRemoteCommand，等价于完成的 S2F41 次数）。
+
+ce_triggers=%d
+已触发的 采集事件触发 次数（后台 goroutine 周期性调用 TriggerCollectionEvent，通常对应设备上报 S6F11 的频次）。
+
+throughput=%.1f ops/s
+吞吐率（每秒操作数），注意这里只统计主动发起的两类请求（状态+远程命令），不把 ce_triggers 算进吞吐率里。
+*/
