@@ -85,6 +85,8 @@ type HsmsProtocol struct {
 	connDoneMu sync.Mutex
 	connDone   chan struct{}
 
+	connectThreadRunning *atomic.Bool
+
 	handlerMu      sync.RWMutex
 	handlers       map[string]DataMessageHandler
 	defaultHandler DataMessageHandler
@@ -102,19 +104,20 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 	logger := log.New(log.Writer(), "hsms_protocol: ", log.LstdFlags)
 
 	h := &HsmsProtocol{
-		remoteAddress: address,
-		remotePort:    port,
-		active:        active,
-		sessionID:     sessionID,
-		name:          name,
-		enabled:       atomic.NewBool(false),
-		connected:     atomic.NewBool(false),
-		logger:        logger,
-		systemCounter: atomic.NewUint32(rand.Uint32()),
-		timeouts:      NewSecsTimeout(),
-		systemQueues:  make(map[uint32]*utils.Deque),
-		handlers:      make(map[string]DataMessageHandler),
-		disconnectFlg: make(chan struct{}, 1),
+		remoteAddress:        address,
+		remotePort:           port,
+		active:               active,
+		sessionID:            sessionID,
+		name:                 name,
+		enabled:              atomic.NewBool(false),
+		connected:            atomic.NewBool(false),
+		logger:               logger,
+		systemCounter:        atomic.NewUint32(rand.Uint32()),
+		timeouts:             NewSecsTimeout(),
+		systemQueues:         make(map[uint32]*utils.Deque),
+		handlers:             make(map[string]DataMessageHandler),
+		disconnectFlg:        make(chan struct{}, 1),
+		connectThreadRunning: atomic.NewBool(false),
 	}
 	h.logCfg.Writer = logger.Writer()
 	h.logCfg.Mode = LoggingModeSML
@@ -189,6 +192,11 @@ func (p *HsmsProtocol) onStateDisconnect(ctx context.Context, _ *fsm.Event) {
 	p.logger.Println("state: NOT_CONNECTED")
 	p.connected.Store(false)
 	p.stopLinktestTimer()
+	if p.enabled.Load() {
+		if p.connectThreadRunning.CompareAndSwap(false, true) {
+			go p.startConnectThread()
+		}
+	}
 }
 
 // onStateConnect is triggered when the HSMS connection transitions out of NOT-CONNECTED.
@@ -256,7 +264,9 @@ func (p *HsmsProtocol) OnConnectionEstablished() {
 // Enable starts the connection manager.
 func (p *HsmsProtocol) Enable() {
 	if p.enabled.CompareAndSwap(false, true) {
-		go p.startConnectThread()
+		if p.connectThreadRunning.CompareAndSwap(false, true) {
+			go p.startConnectThread()
+		}
 	}
 }
 
@@ -317,6 +327,7 @@ func (p *HsmsProtocol) waitForConnectionClosure(timeout time.Duration) {
 }
 
 func (p *HsmsProtocol) startConnectThread() {
+	defer p.connectThreadRunning.Store(false)
 	for p.enabled.Load() {
 		if p.active {
 			if err := p.activeConnect(); err != nil {
@@ -327,7 +338,11 @@ func (p *HsmsProtocol) startConnectThread() {
 				time.Sleep(time.Duration(p.timeouts.T5ConnSeparateTimeout()) * time.Second)
 				continue
 			}
-			return
+			if !p.enabled.Load() {
+				return
+			}
+			time.Sleep(time.Duration(p.timeouts.T5ConnSeparateTimeout()) * time.Second)
+			continue
 		}
 
 		if err := p.passiveConnect(); err != nil {
@@ -385,7 +400,7 @@ func (p *HsmsProtocol) activeConnect() error {
 
 // handleHsmsRequests processes HSMS control messages.
 func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
-	p.logControlMessage("IN", message)
+	p.logControlMessage("RX", message)
 
 	systemID := binary.BigEndian.Uint32(message.SystemBytes())
 
@@ -400,7 +415,6 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 
 		receivedSession := ctrl.SessionID()
 		expectedSession := uint16(p.sessionID)
-		fmt.Println(receivedSession, expectedSession)
 		if receivedSession != expectedSession {
 			// 0xFFFF0000 是 HSMS 标准规定的“系统消息会话 ID”，只用于 Select/Linktest 等控制消息。
 			acceptMismatch := false
@@ -487,6 +501,16 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 			return
 		}
 		p.hsmsConnection.sendLinkTestRsp(message)
+
+	case hsms.SeparateReqStr:
+		p.logger.Println("received separate.req; closing session")
+		p.stopLinktestTimer()
+		p.connected.Store(false)
+		if err := p.connectionState.Disconnect(); err != nil {
+			p.logger.Println("change state to NOT-CONNECTED error:", err)
+		}
+		_ = p.hsmsConnection.Close()
+		p.hsmsConnection.SetSession(nil)
 
 	default:
 		if queue, ok := p.fetchQueue(systemID); ok {
@@ -596,6 +620,8 @@ func (p *HsmsProtocol) logControlMessage(direction string, message ast.HSMSMessa
 }
 
 func (p *HsmsProtocol) handleDataMessage(message *ast.DataMessage) {
+	p.logDataMessage("RX", message)
+
 	handler := p.lookupHandler(message.StreamCode(), message.FunctionCode())
 	if handler != nil {
 		p.invokeHandler(handler, message)
@@ -631,6 +657,21 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 	p.connDone = done
 	p.connDoneMu.Unlock()
 
+	defer func() {
+		p.connDoneMu.Lock()
+		p.connDone = nil
+		p.connDoneMu.Unlock()
+
+		if connection != nil {
+			_ = connection.Close()
+		}
+		if sess := p.hsmsConnection.Session(); sess == connection {
+			p.hsmsConnection.SetSession(nil)
+		}
+
+		close(done)
+	}()
+
 	p.OnConnectionEstablished()
 
 	for p.enabled.Load() {
@@ -642,7 +683,7 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 			if err := p.connectionState.Disconnect(); err != nil {
 				p.logger.Println("change state to NOT-CONNECTED error:", err)
 			}
-			return
+			break
 		}
 
 		message := rsp.(ast.HSMSMessage)
@@ -673,8 +714,6 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 
 		p.handleDataMessage(dataMessage)
 	}
-
-	close(done)
 }
 
 func (p *HsmsProtocol) ensureReady(requireSelected bool) error {

@@ -184,7 +184,8 @@ func (g *GemHandler) buildS6F11(dataID int, ceNode ast.ItemNode, reports []ast.I
 	for _, rpt := range reports {
 		reportNodes = append(reportNodes, rpt)
 	}
-	body := ast.NewListNode(ast.NewBinaryNode(dataID), ceNode, ast.NewListNode(reportNodes...))
+	byteSize := byteSizeForUint(uint64(dataID))
+	body := ast.NewListNode(ast.NewUintNode(byteSize, dataID), ceNode, ast.NewListNode(reportNodes...))
 	return ast.NewDataMessage("EventReport", 6, 11, 0, "H->E", body)
 }
 
@@ -227,18 +228,23 @@ func (g *GemHandler) buildS7F5(ppid idInfo) *ast.DataMessage {
 }
 
 // --- S7F6: ProcessProgramData ---
-// 按标准: <PPID><PPBODY><ACKC6>
-// PPBODY 可以是 ASCII 或 Binary。多数 GEM host 更偏好 Binary。
+// 按标准: <PPID><PPBODY><ACKC7>
 func (g *GemHandler) buildS7F6(ppid ast.ItemNode, programBody string, ack int) *ast.DataMessage {
 	ppidNode := ppid
 	if ppidNode == nil {
 		ppidNode = ast.NewEmptyItemNode()
 	}
-	//bodyNode := ast.NewASCIINode(programBody)
-	bodyNode := ast.NewBinaryNode(programBody)
+	bodyNode := ast.NewASCIINode(programBody)
 	if ack != 0 {
 		bodyNode = ast.NewASCIINode("")
 	}
-	payload := ast.NewListNode(ppidNode, bodyNode, ast.NewBinaryNode(ack))
+	if ack < 0 {
+		ack = 0
+	}
+	if ack > 255 {
+		ack = 255
+	}
+	ackNode := ast.NewBinaryNode(fmt.Sprintf("0b%b", ack))
+	payload := ast.NewListNode(ppidNode, bodyNode, ackNode)
 	return ast.NewDataMessage("ProcessProgramData", 7, 6, 0, "H<-E", payload)
 }

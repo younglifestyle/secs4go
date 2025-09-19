@@ -177,11 +177,19 @@ func (g *GemHandler) Events() Events {
 
 // RegisterStreamFunctionHandler installs or removes a handler for a specific stream/function.
 func (g *GemHandler) RegisterStreamFunctionHandler(stream, function int, handler StreamFunctionHandler) {
+	if handler == nil {
+		g.protocol.RegisterHandler(stream, function, nil)
+		return
+	}
 	g.protocol.RegisterHandler(stream, function, hsms.DataMessageHandler(handler))
 }
 
 // RegisterDefaultStreamHandler sets a fallback invoked when no specific handler matches.
 func (g *GemHandler) RegisterDefaultStreamHandler(handler StreamFunctionHandler) {
+	if handler == nil {
+		g.protocol.RegisterDefaultHandler(nil)
+		return
+	}
 	g.protocol.RegisterDefaultHandler(hsms.DataMessageHandler(handler))
 }
 
