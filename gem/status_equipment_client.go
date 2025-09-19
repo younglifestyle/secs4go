@@ -574,33 +574,61 @@ func parseProcessProgramResponse(msg *ast.DataMessage) (string, int, error) {
 	}
 
 	entries, ok := list.(*ast.ListNode)
-	if !ok || entries.Size() < 3 {
-		return "", -1, fmt.Errorf("malformed S7F6 payload")
+	if !ok {
+		return "", -1, fmt.Errorf("malformed S7F6 payload: root is not a list")
+	}
+	// 标准至少 2 项：PPID, PPBODY
+	if entries.Size() < 2 {
+		return "", -1, fmt.Errorf("malformed S7F6 payload: need at least 2 elements")
 	}
 
+	// entries[0] = PPID（我们目前不使用它的值）
+	// _, _ = entries.Get(0)
+
+	// entries[1] = PPBODY（ASCII 或 Binary）
 	bodyNode, err := entries.Get(1)
 	if err != nil {
 		return "", -1, err
 	}
-	body := ""
-	if ascii, ok := bodyNode.(*ast.ASCIINode); ok {
-		if val, ok := ascii.Values().(string); ok {
-			body = val
+
+	var bodyStr string
+	switch v := bodyNode.(type) {
+	case *ast.ASCIINode:
+		if val, ok := v.Values().(string); ok {
+			bodyStr = val
+		} else {
+			return "", -1, fmt.Errorf("invalid ASCII PPBODY payload type %T", v.Values())
+		}
+	case *ast.BinaryNode:
+		ints, ok := v.Values().([]int)
+		if !ok {
+			return "", -1, fmt.Errorf("invalid Binary PPBODY payload type %T", v.Values())
+		}
+		bin := make([]byte, len(ints))
+		for i, n := range ints {
+			bin[i] = byte(n)
+		}
+		// 保持原 API 返回 string：按 UTF-8 转换（若为非文本内容，你可另加 Raw 版本返回 []byte）
+		bodyStr = string(bin)
+	default:
+		return "", -1, fmt.Errorf("unsupported PPBODY node type %T", bodyNode)
+	}
+
+	// entries[2]（可选）= ACK（二进制 1 字节）。没有就默认 0。
+	ack := 0
+	if entries.Size() >= 3 {
+		if ackNode, err := entries.Get(2); err == nil {
+			if bn, ok := ackNode.(*ast.BinaryNode); ok {
+				if vals, ok := bn.Values().([]int); ok && len(vals) > 0 {
+					ack = vals[0]
+				} else {
+					return "", -1, fmt.Errorf("invalid ack payload")
+				}
+			} else {
+				return "", -1, fmt.Errorf("expected binary ack, got %T", ackNode)
+			}
 		}
 	}
 
-	ackNode, err := entries.Get(2)
-	if err != nil {
-		return "", -1, err
-	}
-	ackBinary, ok := ackNode.(*ast.BinaryNode)
-	if !ok {
-		return "", -1, fmt.Errorf("expected binary ack, got %T", ackNode)
-	}
-	values, ok := ackBinary.Values().([]int)
-	if !ok || len(values) == 0 {
-		return "", -1, fmt.Errorf("invalid ack payload")
-	}
-
-	return body, values[0], nil
+	return bodyStr, ack, nil
 }

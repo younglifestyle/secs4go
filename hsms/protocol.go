@@ -82,6 +82,9 @@ type HsmsProtocol struct {
 	logCfg     LoggingConfig
 	logWriteMu sync.Mutex
 
+	connDoneMu sync.Mutex
+	connDone   chan struct{}
+
 	handlerMu      sync.RWMutex
 	handlers       map[string]DataMessageHandler
 	defaultHandler DataMessageHandler
@@ -267,6 +270,20 @@ func (p *HsmsProtocol) Disable() {
 	p.connected.Store(false)
 
 	if p.active {
+		if sess := p.hsmsConnection.Session(); sess != nil && !sess.IsClosed() {
+			if p.connectionState.CurrentState() == StateConnectedSelected {
+				if err := p.hsmsConnection.sendDeselectReq(); err != nil {
+					p.logger.Println("deselect error:", err)
+				}
+			}
+			systemID := p.getNextSystemCounter()
+			sep := ast.NewHSMSMessageSeparateReq(uint16(p.sessionID), p.encodeSystemID(systemID))
+			if err := p.hsmsConnection.Send(sep.ToBytes()); err != nil {
+				p.logger.Println("send separate.req error:", err)
+			}
+			// allow a brief moment for remote to process before closing
+			time.Sleep(200 * time.Millisecond)
+		}
 		select {
 		case p.disconnectFlg <- struct{}{}:
 		default:
@@ -274,6 +291,7 @@ func (p *HsmsProtocol) Disable() {
 		if err := p.hsmsConnection.Close(); err != nil {
 			p.logger.Println("close session error:", err)
 		}
+		p.waitForConnectionClosure(2 * time.Second)
 	} else {
 		p.serverMu.Lock()
 		if p.server != nil {
@@ -281,6 +299,20 @@ func (p *HsmsProtocol) Disable() {
 			p.server = nil
 		}
 		p.serverMu.Unlock()
+	}
+}
+
+func (p *HsmsProtocol) waitForConnectionClosure(timeout time.Duration) {
+	p.connDoneMu.Lock()
+	done := p.connDone
+	p.connDoneMu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		p.logger.Println("timeout waiting for connection teardown")
 	}
 }
 
@@ -594,6 +626,11 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 		}
 	}
 
+	done := make(chan struct{})
+	p.connDoneMu.Lock()
+	p.connDone = done
+	p.connDoneMu.Unlock()
+
 	p.OnConnectionEstablished()
 
 	for p.enabled.Load() {
@@ -636,6 +673,8 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 
 		p.handleDataMessage(dataMessage)
 	}
+
+	close(done)
 }
 
 func (p *HsmsProtocol) ensureReady(requireSelected bool) error {

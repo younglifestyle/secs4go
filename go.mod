@@ -1,6 +1,6 @@
 module github.com/younglifestyle/secs4go
 
-go 1.21
+go 1.23
 
 require (
 	github.com/ahmetb/go-linq/v3 v3.2.0
