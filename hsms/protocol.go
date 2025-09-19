@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +96,9 @@ type HsmsProtocol struct {
 	linktestTimer   *time.Ticker
 	disconnectFlg   chan struct{}
 
+	t7TimerMu sync.Mutex
+	t7Timer   *time.Timer
+
 	serverMu sync.Mutex
 	server   *link.Server
 }
@@ -123,9 +127,10 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 	h.logCfg.Mode = LoggingModeSML
 
 	h.connectionState = NewConnectionStateMachine(fsm.Callbacks{
-		"leave_NOT-CONNECTED":      h.onStateConnect,
-		"enter_NOT-CONNECTED":      h.onStateDisconnect,
-		"enter_CONNECTED_SELECTED": h.onStateSelect,
+		"leave_NOT-CONNECTED":                h.onStateConnect,
+		"enter_NOT-CONNECTED":                h.onStateDisconnect,
+		"enter_" + StateConnectedNotSelected: h.onStateConnectedNotSelected,
+		"enter_CONNECTED_SELECTED":           h.onStateSelect,
 	})
 	h.hsmsConnection = NewHsmsConnection(active, address, port, sessionID, h)
 
@@ -183,15 +188,56 @@ func (p *HsmsProtocol) stopLinktestTimer() {
 	}
 }
 
+func (p *HsmsProtocol) startT7Timer() {
+	duration := time.Duration(p.timeouts.T7NotSelectTimeout()) * time.Second
+	if duration <= 0 {
+		return
+	}
+
+	p.t7TimerMu.Lock()
+	if p.t7Timer != nil {
+		p.t7Timer.Stop()
+	}
+	p.t7Timer = time.AfterFunc(duration, func() {
+		p.logger.Printf("T7 timeout after %s without SELECT", duration)
+		p.connected.Store(false)
+		p.stopLinktestTimer()
+		if err := p.connectionState.TimeoutT7(); err != nil {
+			p.logger.Println("timeoutT7 transition error:", err)
+		}
+		if err := p.hsmsConnection.Close(); err != nil {
+			p.logger.Println("close session after T7 timeout error:", err)
+		}
+	})
+	p.t7TimerMu.Unlock()
+}
+
+func (p *HsmsProtocol) stopT7Timer() {
+	p.t7TimerMu.Lock()
+	if p.t7Timer != nil {
+		p.t7Timer.Stop()
+		p.t7Timer = nil
+	}
+	p.t7TimerMu.Unlock()
+}
+
 // onStateSelect is triggered when the HSMS connection enters SELECTED state.
+
+func (p *HsmsProtocol) onStateConnectedNotSelected(ctx context.Context, _ *fsm.Event) {
+	p.logger.Println("state: CONNECTED_NOT_SELECTED")
+	p.startT7Timer()
+}
+
 func (p *HsmsProtocol) onStateSelect(ctx context.Context, _ *fsm.Event) {
 	p.logger.Println("state: CONNECTED_SELECTED")
+	p.stopT7Timer()
 }
 
 func (p *HsmsProtocol) onStateDisconnect(ctx context.Context, _ *fsm.Event) {
 	p.logger.Println("state: NOT_CONNECTED")
 	p.connected.Store(false)
 	p.stopLinktestTimer()
+	p.stopT7Timer()
 	if p.enabled.Load() {
 		if p.connectThreadRunning.CompareAndSwap(false, true) {
 			go p.startConnectThread()
@@ -201,8 +247,6 @@ func (p *HsmsProtocol) onStateDisconnect(ctx context.Context, _ *fsm.Event) {
 
 // onStateConnect is triggered when the HSMS connection transitions out of NOT-CONNECTED.
 func (p *HsmsProtocol) onStateConnect(ctx context.Context, _ *fsm.Event) {
-	p.logger.Println("state: CONNECTED_NOT_SELECTED")
-
 	go func() {
 		if p.active {
 			if err := p.hsmsConnection.sendSelectReq(); err != nil {
@@ -277,6 +321,7 @@ func (p *HsmsProtocol) Disable() {
 	}
 
 	p.stopLinktestTimer()
+	p.stopT7Timer()
 	p.connected.Store(false)
 
 	if p.active {
@@ -557,26 +602,76 @@ func (p *HsmsProtocol) logDataMessage(direction string, message *ast.DataMessage
 
 	logSML := cfg.Mode == LoggingModeUnset || cfg.Mode == LoggingModeSML || cfg.Mode == LoggingModeBoth
 	logBinary := cfg.Mode == LoggingModeBinary || cfg.Mode == LoggingModeBoth
+	if !logSML && !logBinary {
+		return
+	}
 
 	var builder strings.Builder
+	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+	header := fmt.Sprintf(
+		"%s [%s][DATA] S%02dF%02d session=%d wait=%s system=%X",
+		timestamp,
+		direction,
+		message.StreamCode(),
+		message.FunctionCode(),
+		message.SessionID(),
+		strings.ToUpper(message.WaitBit()),
+		message.SystemBytes(),
+	)
+	builder.WriteString(header)
+	builder.WriteByte('\n')
+
 	if logSML {
-		fmt.Fprintf(&builder, "[%s][DATA][SML]\n%s", direction, message.String())
+		builder.WriteString("    SML:\n")
+		if block := indentLines(message.String(), "      "); block != "" {
+			builder.WriteString(block)
+			builder.WriteByte('\n')
+		}
 	}
 	if logBinary {
 		if raw := message.ToBytes(); len(raw) > 0 {
-			if builder.Len() > 0 {
+			builder.WriteString("    BIN:\n")
+			if block := indentLines(formatHexBytes(raw), "      "); block != "" {
+				builder.WriteString(block)
 				builder.WriteByte('\n')
 			}
-			fmt.Fprintf(&builder, "[%s][DATA][BIN] %X", direction, raw)
 		}
 	}
-	if builder.Len() == 0 {
-		return
-	}
+
 	builder.WriteByte('\n')
 	p.logWriteMu.Lock()
 	_, _ = cfg.Writer.Write([]byte(builder.String()))
 	p.logWriteMu.Unlock()
+}
+
+func indentLines(text, prefix string) string {
+	text = strings.TrimSuffix(text, "\n")
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatHexBytes(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	for i, b := range data {
+		if i > 0 {
+			if i%16 == 0 {
+				builder.WriteByte('\n')
+			} else if i%2 == 0 {
+				builder.WriteByte(' ')
+			}
+		}
+		fmt.Fprintf(&builder, "%02X", b)
+	}
+	return builder.String()
 }
 
 func (p *HsmsProtocol) logControlMessage(direction string, message ast.HSMSMessage) {
@@ -620,8 +715,6 @@ func (p *HsmsProtocol) logControlMessage(direction string, message ast.HSMSMessa
 }
 
 func (p *HsmsProtocol) handleDataMessage(message *ast.DataMessage) {
-	p.logDataMessage("RX", message)
-
 	handler := p.lookupHandler(message.StreamCode(), message.FunctionCode())
 	if handler != nil {
 		p.invokeHandler(handler, message)
@@ -637,7 +730,7 @@ func (p *HsmsProtocol) handleDataMessage(message *ast.DataMessage) {
 		return
 	}
 
-	p.logger.Printf("unhandled data message S%02dF%02d", message.StreamCode(), message.FunctionCode())
+	//p.logger.Printf("unhandled data message S%02dF%02d", message.StreamCode(), message.FunctionCode())
 }
 
 func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.Session) {
@@ -672,16 +765,56 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 		close(done)
 	}()
 
+	t8Duration := time.Duration(p.timeouts.T8NetworkIntercharTimeout()) * time.Second
+	var deadlineCodec link.DeadlineCodec
+	if t8Duration > 0 {
+		if dc, ok := connection.Codec().(link.DeadlineCodec); ok {
+			deadlineCodec = dc
+		} else {
+			p.logger.Println("T8 timeout configured but codec does not support deadlines; disabling T8 enforcement")
+			t8Duration = 0
+		}
+	}
+	if deadlineCodec != nil {
+		defer deadlineCodec.SetReadDeadline(time.Time{})
+	}
+
 	p.OnConnectionEstablished()
 
 	for p.enabled.Load() {
+		if deadlineCodec != nil {
+			if err := deadlineCodec.SetReadDeadline(time.Now().Add(t8Duration)); err != nil {
+				p.logger.Println("set read deadline error:", err)
+			}
+		}
+
 		rsp, err := connection.Receive()
+
+		if deadlineCodec != nil {
+			if clrErr := deadlineCodec.SetReadDeadline(time.Time{}); clrErr != nil {
+				p.logger.Println("clear read deadline error:", clrErr)
+			}
+		}
+
 		if err != nil {
-			p.logger.Println("receive error:", err)
 			p.connected.Store(false)
 			p.stopLinktestTimer()
-			if err := p.connectionState.Disconnect(); err != nil {
-				p.logger.Println("change state to NOT-CONNECTED error:", err)
+
+			logHandled := false
+			if t8Duration > 0 {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					p.logger.Printf("receive error: T8 timeout after %s", t8Duration)
+					logHandled = true
+				}
+			}
+			if !logHandled {
+				p.logger.Println("receive error:", err)
+			}
+
+			if p.connectionState.CurrentState() != StateNotConnected {
+				if err := p.connectionState.Disconnect(); err != nil {
+					p.logger.Println("change state to NOT-CONNECTED error:", err)
+				}
 			}
 			break
 		}
