@@ -88,7 +88,7 @@ The equipment example (`runPythonHostEquipment` in `example/gem_pytest/main.go`)
    handler.DefineReports() // S2F33 clear
    handler.DefineReports(gem.ReportDefinitionRequest{
        ReportID: 4001,
-       VIDs:     []interface{}{1001, 2001},
+       VIDs:     []interface{}{1011, 2001},
    })
    handler.LinkEventReports(gem.EventReportLinkRequest{CEID: 3001, ReportIDs: []interface{}{4001}})
    handler.EnableEventReports(true, 3001)
