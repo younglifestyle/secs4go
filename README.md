@@ -3,7 +3,7 @@
 Simple Golang SECS/GEM implementation.
 
 * [x] SECS-II
-* [x] HSMS, 不支持HSMS-GS
+* [x] HSMS, Not supported HSMS-GS
 * [x] GEM (handshake, communication state, Are You There)
 
 ### Quick Start
