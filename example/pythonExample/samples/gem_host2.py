@@ -246,7 +246,7 @@ def main() -> None:
 
     settings = secsgem.hsms.HsmsSettings(
         address="127.0.0.1",
-        port=5000,
+        port=15000,
         connect_mode=secsgem.hsms.HsmsConnectMode.ACTIVE,
         device_type=secsgem.common.DeviceType.HOST,
         session_id=2,
