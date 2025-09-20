@@ -3,10 +3,8 @@
 Simple Golang SECS/GEM implementation.
 
 * [x] SECS-II
-* [x] HSMS
-* [x] SML
+* [x] HSMS, ‰∏çÊîØÊåÅHSMS-GS
 * [x] GEM (handshake, communication state, Are You There)
-* [ ] HSMS-SS, HSMS-GS
 
 ### Quick Start
 
@@ -27,8 +25,8 @@ if handler.WaitForCommunicating(30 * time.Second) {
 
 ### Acknowledgements
 
-* [funny/link](https://github.com/funny/link)£∫Go Networking Scaffold
-* [wolimst/lib-secs2-hsms-go](https://github.com/wolimst/lib-secs2-hsms-go)£∫SECS-II/HSMS/SML Data Parser
+* [funny/link]( https://github.com/funny/link): Go Networking Scaffold
+* [wolimst/lib-secs2-hsms-go](https://github.com/wolimst/lib-secs2-hsms-go): SECS-II/HSMS/SML Data Parser
 
 ### Other
 
