@@ -17,7 +17,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1", "Peer address")
-	port := flag.Int("port", 5000, "Peer port")
+	port := flag.Int("port", 15000, "Peer port")
 	session := flag.Int("session", 2, "HSMS session identifier")
 	active := flag.Bool("active", false, "Dial the peer instead of listening")
 	mdln := flag.String("mdln", "secs4go-equipment", "MDLN string reported in S1F2")
