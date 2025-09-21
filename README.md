@@ -27,6 +27,7 @@ if handler.WaitForCommunicating(30 * time.Second) {
 
 * [funny/link]( https://github.com/funny/link): Go Networking Scaffold
 * [wolimst/lib-secs2-hsms-go](https://github.com/wolimst/lib-secs2-hsms-go): SECS-II/HSMS/SML Data Parser
+* reference doc: [scesgem](https://github.com/bparzella/secsgem), [python doc](https://secsgem.readthedocs.io/en/latest/index.html)
 
 ### Other
 
