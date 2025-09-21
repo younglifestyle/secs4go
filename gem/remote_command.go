@@ -6,6 +6,29 @@ import (
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 )
 
+// -----------------------------------------------------------------------------
+// HCACK codes for S2F42 (Host Command Acknowledge)
+// 0  Acknowledge
+// 1  Denied, invalid command
+// 2  Denied, cannot perform now
+// 3  Denied, parameter invalid
+// 4  Acknowledge, will finish later
+// 5  Rejected, already in condition
+// 6  No such object
+// 7–63 Reserved
+// -----------------------------------------------------------------------------
+const (
+	HCACKAcknowledge            = 0
+	HCACKDeniedInvalidCommand   = 1
+	HCACKDeniedCannotPerformNow = 2
+	HCACKDeniedParamInvalid     = 3
+	HCACKAckWillFinishLater     = 4
+	HCACKRejectedAlreadyOk      = 5
+	HCACKNoSuchObject           = 6
+	// 7–63 are reserved
+	hcackMaxReserved = 63
+)
+
 // RemoteCommandRequest is passed to equipment-side handlers when a host issues S2F41.
 type RemoteCommandRequest struct {
 	Command    string
