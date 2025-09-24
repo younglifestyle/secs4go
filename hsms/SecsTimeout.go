@@ -10,9 +10,11 @@ type SecsTimeout struct {
 	t6ControlTransTimeout int
 	// default 10s, Not Select 状态超时 T7 (T7 NOT SELECT timeout)表示当建立了 TCP/IP 连接之后通信处于 Not Select 状态的最长时间，
 	// 通信必须在该时间完成 select 操作，否则将会断开 TCP/IP 连接
+	// 10 ~ 30 秒
 	t7NotSelectTimeout int
 	// default 6s, 网络字符超时 T8 (T8 network intercharacter timeout)表示成功接收到单个HSMS 消息的字符之间的最大时间间隔
 	// 开始获取数据到结束的时间间隔
+	// 45 ~ 65 秒最常见（测试时可能设 6~10 秒）
 	t8NetworkIntercharTimeout int
 }
 
@@ -23,7 +25,7 @@ func NewSecsTimeout() *SecsTimeout {
 		t5ConnSeparateTimeout:     10,
 		t6ControlTransTimeout:     5,
 		t7NotSelectTimeout:        10,
-		t8NetworkIntercharTimeout: 6,
+		t8NetworkIntercharTimeout: 45,
 	}
 }
 
