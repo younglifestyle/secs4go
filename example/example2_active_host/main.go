@@ -18,13 +18,14 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1", "Equipment address")
-	port := flag.Int("port", 5000, "Equipment port")
+	port := flag.Int("port", 15000, "Equipment port")
 	session := flag.Int("session", 2, "HSMS session identifier")
 	scenario := flag.String("scenario", "all", "Operation scenario: status|reports|remote|process|all")
 	flag.Parse()
 
 	protocol := hsms.NewHsmsProtocol(*addr, *port, true, *session, "example2-host")
 	protocol.Timeouts().SetLinktest(30)
+	protocol.Timeouts().SetT8NetworkIntercharTimeout(45)
 
 	handler, err := gem.NewGemHandler(gem.Options{
 		Protocol:   protocol,

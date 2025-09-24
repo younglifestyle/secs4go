@@ -244,7 +244,7 @@ if __name__ == "__main__":
 
     settings = secsgem.hsms.HsmsSettings(
         address="127.0.0.1",
-        port=5000,
+        port=15000,
         connect_mode=secsgem.hsms.HsmsConnectMode.PASSIVE,
         device_type=secsgem.common.DeviceType.EQUIPMENT,
         session_id=2,
