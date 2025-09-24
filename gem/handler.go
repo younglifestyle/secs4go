@@ -739,7 +739,13 @@ func (g *GemHandler) onS5F2(msg *ast.DataMessage) (*ast.DataMessage, error) {
 		return nil, nil
 	}
 
-	ack, err := readHCACK(msg)
+	item, err := msg.Get(0)
+	if err != nil {
+		g.logger.Println("failed to parse S5F2:", err)
+		return nil, err
+	}
+
+	ack, err := readSingleBinaryValue(item)
 	if err != nil {
 		g.logger.Println("failed to parse S5F2:", err)
 		return nil, err
@@ -757,14 +763,24 @@ func (g *GemHandler) onS5F2(msg *ast.DataMessage) (*ast.DataMessage, error) {
 }
 
 func (g *GemHandler) onS2F41(msg *ast.DataMessage) (*ast.DataMessage, error) {
+	buildAck := func(res RemoteCommandResult) *ast.DataMessage {
+		ack, err := g.buildS2F42(res)
+		if err != nil {
+			g.logger.Println("build remote command ack error:", err)
+			fallback, _ := g.buildS2F42(RemoteCommandResult{HCACK: HCACKInvalidCommand})
+			return fallback
+		}
+		return ack
+	}
+
 	if msg == nil {
-		return g.buildS2F42(5), nil
+		return buildAck(RemoteCommandResult{HCACK: HCACKAlreadyInCondition}), nil
 	}
 
 	req, err := parseRemoteCommand(msg)
 	if err != nil {
 		g.logger.Println("failed to parse S2F41:", err)
-		return g.buildS2F42(1), nil
+		return buildAck(RemoteCommandResult{HCACK: HCACKInvalidCommand}), nil
 	}
 
 	if g.events.RemoteCommandReceived != nil {
@@ -773,20 +789,18 @@ func (g *GemHandler) onS2F41(msg *ast.DataMessage) (*ast.DataMessage, error) {
 
 	handler := g.getRemoteCommandHandler()
 	if handler == nil {
-		return g.buildS2F42(1), nil
+		return buildAck(RemoteCommandResult{HCACK: HCACKInvalidCommand}), nil
 	}
 
-	ack, callErr := handler(req)
+	result, callErr := handler(req)
 	if callErr != nil {
 		g.logger.Println("remote command handler error:", callErr)
-		if ack == 0 {
-			ack = 1
+		if result.HCACK == HCACKAcknowledge {
+			result.HCACK = HCACKCannotPerformNow
 		}
 	}
-	if ack < 0 || ack > 255 {
-		ack = 1
-	}
-	return g.buildS2F42(ack), nil
+
+	return buildAck(result), nil
 }
 
 func (g *GemHandler) buildS1F1() *ast.DataMessage {
@@ -874,27 +888,32 @@ func readCommAck(msg *ast.DataMessage) int {
 }
 
 // SendRemoteCommand issues an S2F41 command (host only).
-func (g *GemHandler) SendRemoteCommand(command string, params []string) (int, error) {
+func (g *GemHandler) SendRemoteCommand(command interface{}, params []RemoteCommandParameterValue) (RemoteCommandResult, error) {
 	if g.deviceType != DeviceHost {
-		return -1, ErrOperationNotSupported
+		return RemoteCommandResult{}, ErrOperationNotSupported
 	}
 	if err := g.ensureCommunicating(); err != nil {
-		return -1, err
+		return RemoteCommandResult{}, err
 	}
 
-	resp, err := g.protocol.SendAndWait(g.buildS2F41(command, params))
+	msg, err := g.buildS2F41(command, params)
 	if err != nil {
-		return -1, err
+		return RemoteCommandResult{}, err
+	}
+
+	resp, err := g.protocol.SendAndWait(msg)
+	if err != nil {
+		return RemoteCommandResult{}, err
 	}
 	if resp == nil {
-		return -1, errors.New("gem: missing S2F42 response")
+		return RemoteCommandResult{}, errors.New("gem: missing S2F42 response")
 	}
 
-	ack, err := readHCACK(resp)
+	result, err := parseRemoteCommandAck(resp)
 	if err != nil {
-		return -1, err
+		return RemoteCommandResult{}, err
 	}
-	return ack, nil
+	return result, nil
 }
 
 // SetRemoteCommandHandler installs an equipment-side handler for S2F41 requests.

@@ -72,12 +72,12 @@ func TestGemHandlerIntegration(t *testing.T) {
 	})
 
 	remoteCh := make(chan gem.RemoteCommandRequest, 1)
-	equipmentHandler.SetRemoteCommandHandler(func(req gem.RemoteCommandRequest) (int, error) {
+	equipmentHandler.SetRemoteCommandHandler(func(req gem.RemoteCommandRequest) (gem.RemoteCommandResult, error) {
 		select {
 		case remoteCh <- req:
 		default:
 		}
-		return 0, nil
+		return gem.RemoteCommandResult{HCACK: gem.HCACKAcknowledge}, nil
 	})
 
 	equipmentHandler.RegisterAlarm(gem.Alarm{ID: 1001, Text: "Door Open"})
@@ -109,14 +109,14 @@ func TestGemHandlerIntegration(t *testing.T) {
 		t.Fatal("timed out waiting for alarm event")
 	}
 
-	ack, err := hostHandler.SendRemoteCommand("RESET", []string{"IMMEDIATE"})
+	result, err := hostHandler.SendRemoteCommand("RESET", []gem.RemoteCommandParameterValue{{Name: "MODE", Value: "IMMEDIATE"}})
 	if err != nil {
 		t.Fatalf("send remote command: %v", err)
 	}
-	if ack != 0 {
-		t.Fatalf("unexpected HCACK %d", ack)
+	if result.HCACK != gem.HCACKAcknowledge {
+		t.Fatalf("unexpected HCACK %d", result.HCACK)
 	}
-	t.Logf("remote command acknowledged with HCACK=%d", ack)
+	t.Logf("remote command acknowledged with HCACK=%d", result.HCACK)
 
 	select {
 	case req := <-remoteCh:

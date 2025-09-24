@@ -95,7 +95,7 @@ The equipment example (`runPythonHostEquipment` in `example/gem_pytest/main.go`)
    ```
 3. **Collection event snapshots**  `handler.RequestCollectionEventReport(ceid)` wraps S6F15/S6F16.
 4. **Process program upload/download**  `UploadProcessProgram` (S7F3) and `RequestProcessProgram` (S7F5). Handle non-zero ACKs gracefully.
-5. **Remote commands**  `handler.SendRemoteCommand("START", params)` returns HCACK; `0` is success, `4` means acknowledged, finish later.
+5. **Remote commands**  `handler.SendRemoteCommand("START", params)` returns a `RemoteCommandResult`. `HCACK=0` is success, `4` means acknowledged, finish later.
 
 ## 6. Handling Callbacks and Extensions
 

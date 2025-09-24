@@ -136,22 +136,23 @@ func registerCollectionEvents(handler *gem.GemHandler) {
 }
 
 func registerRemoteCommands(handler *gem.GemHandler) {
-	handler.SetRemoteCommandHandler(func(req gem.RemoteCommandRequest) (int, error) {
+	handler.SetRemoteCommandHandler(func(req gem.RemoteCommandRequest) (gem.RemoteCommandResult, error) {
 		log.Printf("remote command received: %s params=%v", req.Command, req.Parameters)
 		switch req.Command {
 		case "START":
 			go func() {
+				log.Printf("trigger CEID")
 				// Give the host a moment to set up report links
 				time.Sleep(2 * time.Second)
 				if err := handler.TriggerCollectionEvent(int64(3001)); err != nil {
 					log.Printf("trigger CEID 3001 after START: %v", err)
 				}
 			}()
-			return 0, nil
+			return gem.RemoteCommandResult{HCACK: gem.HCACKAcknowledge}, nil
 		case "STOP":
-			return 0, nil
+			return gem.RemoteCommandResult{HCACK: gem.HCACKAcknowledge}, nil
 		default:
-			return 1, nil
+			return gem.RemoteCommandResult{HCACK: gem.HCACKInvalidCommand}, nil
 		}
 	})
 }

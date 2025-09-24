@@ -127,20 +127,27 @@ func startPairedHandlers(t *testing.T) (*GemHandler, *GemHandler, *equipmentStat
 		t.Fatalf("register collection event: %v", err)
 	}
 
-	equipmentHandler.SetRemoteCommandHandler(func(req RemoteCommandRequest) (int, error) {
+	equipmentHandler.SetRemoteCommandHandler(func(req RemoteCommandRequest) (RemoteCommandResult, error) {
 		switch req.Command {
 		case "START":
 			lot := "RUN"
-			if len(req.Parameters) > 0 {
-				lot = req.Parameters[0]
+			for _, param := range req.Parameters {
+				if param.Name == "LOTID" {
+					if ascii, ok := param.Value.(*ast.ASCIINode); ok {
+						if text, ok := ascii.Values().(string); ok && text != "" {
+							lot = text
+						}
+					}
+					break
+				}
 			}
 			state.startLot(lot)
-			return 0, nil
+			return RemoteCommandResult{HCACK: HCACKAcknowledge}, nil
 		case "STOP":
 			state.stopLot()
-			return 0, nil
+			return RemoteCommandResult{HCACK: HCACKAcknowledge}, nil
 		default:
-			return 1, fmt.Errorf("unknown command %q", req.Command)
+			return RemoteCommandResult{HCACK: HCACKInvalidCommand}, fmt.Errorf("unknown command %q", req.Command)
 		}
 	})
 
@@ -239,14 +246,15 @@ func TestGemHighThroughputSoak(t *testing.T) {
 				atomic.AddInt64(&statusRequests, 1)
 
 				cmd := "START"
-				params := []string{fmt.Sprintf("LOT-%d-%d", idx, j)}
+				paramValues := []RemoteCommandParameterValue{{Name: "LOTID", Value: fmt.Sprintf("LOT-%d-%d", idx, j)}}
 				if j%2 == 1 {
 					cmd = "STOP"
-					params = nil
+					paramValues = nil
 				}
 
-				if ack, err := host.SendRemoteCommand(cmd, params); err != nil || ack != 0 {
-					errCh <- fmt.Errorf("goroutine %d remote command %s failed: ack=%d err=%v", idx, cmd, ack, err)
+				result, err := host.SendRemoteCommand(cmd, paramValues)
+				if err != nil || result.HCACK != HCACKAcknowledge {
+					errCh <- fmt.Errorf("goroutine %d remote command %s failed: hcack=%d err=%v", idx, cmd, result.HCACK, err)
 					return
 				}
 				atomic.AddInt64(&remoteCommands, 1)

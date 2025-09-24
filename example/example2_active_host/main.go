@@ -237,12 +237,16 @@ func runReportWorkflow(handler *gem.GemHandler, eventCh <-chan gem.EventReport) 
 
 func runRemoteCommand(handler *gem.GemHandler, eventCh <-chan gem.EventReport) {
 	log.Println("--- REMOTE COMMAND START ---")
-	ack, err := handler.SendRemoteCommand("START", nil)
+	result, err := handler.SendRemoteCommand("START", nil)
 	if err != nil {
 		log.Printf("SendRemoteCommand error: %v", err)
 		return
 	}
-	log.Printf("remote command START ack=%d", ack)
+	log.Printf("remote command START HCACK=%d", result.HCACK)
+	if result.HCACK != gem.HCACKAcknowledge && result.HCACK != gem.HCACKAcknowledgeLater {
+		log.Printf("remote command not accepted (HCACK=%d); skipping", result.HCACK)
+		return
+	}
 
 	select {
 	case rpt := <-eventCh:
