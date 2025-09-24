@@ -38,7 +38,7 @@ This library is only a portion, completing the most fundamental part. Use it wit
 ### GEM Capabilities
 
 - Alarm reporting: register alarms via \\RegisterAlarm\\ and trigger S5F1/S5F2 with \\RaiseAlarm\\ / \\ClearAlarm\\.
-- Remote command support: host calls \\SendRemoteCommand\\ (S2F41/42) while equipment hooks \\SetRemoteCommandHandler\\.
+- Remote command support: host calls `SendRemoteCommand` (S2F41/42, returns `RemoteCommandResult`) while equipment hooks `SetRemoteCommandHandler`.
 
 ### Integration
 

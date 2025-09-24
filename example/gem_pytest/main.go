@@ -216,13 +216,13 @@ func exerciseProcessProgram(handler *gem.GemHandler, ppid string) error {
 
 func exerciseRemoteCommand(handler *gem.GemHandler) error {
 	log.Println("sending remote command START")
-	ack, err := handler.SendRemoteCommand("START", nil)
+	result, err := handler.SendRemoteCommand("START", nil)
 	if err != nil {
 		return err
 	}
-	log.Printf("  HCACK=%d", ack)
-	if ack != 0 && ack != 4 { // treat ACK_FINISH_LATER as success
-		log.Printf("  remote command not accepted (HCACK=%d); skipping", ack)
+	log.Printf("  HCACK=%d", result.HCACK)
+	if result.HCACK != gem.HCACKAcknowledge && result.HCACK != gem.HCACKAcknowledgeLater { // treat ACK_FINISH_LATER as success
+		log.Printf("  remote command not accepted (HCACK=%d); skipping", result.HCACK)
 		return nil
 	}
 	return nil
@@ -291,12 +291,12 @@ func registerDemoCapabilities(handler *gem.GemHandler) {
 
 	handler.RegisterAlarm(gem.Alarm{ID: 1001, Text: "DoorOpen"})
 
-	handler.SetRemoteCommandHandler(func(req gem.RemoteCommandRequest) (int, error) {
+	handler.SetRemoteCommandHandler(func(req gem.RemoteCommandRequest) (gem.RemoteCommandResult, error) {
 		log.Printf("remote command received: %s %v", req.Command, req.Parameters)
 		if err := handler.TriggerCollectionEvent(3001); err != nil {
 			log.Printf("failed to trigger CEID 3001: %v", err)
 		}
-		return 0, nil
+		return gem.RemoteCommandResult{HCACK: gem.HCACKAcknowledge}, nil
 	})
 }
 
