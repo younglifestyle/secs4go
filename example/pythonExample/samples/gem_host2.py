@@ -128,6 +128,9 @@ class GoEquipmentHost(secsgem.gem.GemHostHandler):
 
     # ---------- scenario ----------
     def demo_run(self) -> None:
+        self.logger.info("Sending S1F13 to Establish Communications")
+        self._send(1, 13, [])
+
         self._status_variable_namelist()
         self._status_snapshot()
         self._report_workflow()
@@ -247,7 +250,7 @@ def main() -> None:
     settings = secsgem.hsms.HsmsSettings(
         address="127.0.0.1",
         port=15000,
-        connect_mode=secsgem.hsms.HsmsConnectMode.ACTIVE,
+        connect_mode=secsgem.hsms.HsmsConnectMode.PASSIVE,
         device_type=secsgem.common.DeviceType.HOST,
         session_id=2,
     )

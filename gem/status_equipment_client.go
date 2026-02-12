@@ -632,3 +632,84 @@ func parseProcessProgramResponse(msg *ast.DataMessage) (string, int, error) {
 
 	return bodyStr, ack, nil
 }
+
+// Clock synchronization APIs (Host side)
+
+// RequestDateTime sends S2F17 to query equipment time.
+// Returns parsed equipment time.
+func (g *GemHandler) RequestDateTime() (string, error) {
+	if g.deviceType != DeviceHost {
+		return "", ErrOperationNotSupported
+	}
+	if err := g.ensureCommunicating(); err != nil {
+		return "", err
+	}
+
+	// Build and send S2F17 (empty body)
+	request := ast.NewDataMessage("DateTimeRequest", 2, 17, 1, "H->E", ast.NewListNode())
+
+	response, err := g.protocol.SendAndWait(request)
+	if err != nil {
+		return "", fmt.Errorf("gem: S2F17 failed: %w", err)
+	}
+
+	// Parse S2F18 response
+	timeNode, err := response.Get()
+	if err != nil {
+		return "", fmt.Errorf("gem: malformed S2F18: %w", err)
+	}
+
+	asciiNode, ok := timeNode.(*ast.ASCIINode)
+	if !ok {
+		return "", fmt.Errorf("gem: S2F18 TIME not ASCII")
+	}
+
+	timeStr, ok := asciiNode.Values().(string)
+	if !ok {
+		return "", fmt.Errorf("gem: S2F18 TIME invalid format")
+	}
+
+	return timeStr, nil
+}
+
+// SetDateTime sends S2F31 to set equipment time.
+// Returns TIACK code: 0=Accepted, 1=Not allowed, 2=Out of sync limit.
+func (g *GemHandler) SetDateTime(timeStr string) (byte, error) {
+	if g.deviceType != DeviceHost {
+		return 0, ErrOperationNotSupported
+	}
+	if err := g.ensureCommunicating(); err != nil {
+		return 0, err
+	}
+
+	if len(timeStr) < 14 {
+		return 0, fmt.Errorf("gem: invalid time format (need YYYYMMDDhhmmss00)")
+	}
+
+	// Build S2F31
+	body := ast.NewASCIINode(timeStr)
+	request := ast.NewDataMessage("DateTimeSetRequest", 2, 31, 1, "H->E", body)
+
+	response, err := g.protocol.SendAndWait(request)
+	if err != nil {
+		return 0, fmt.Errorf("gem: S2F31 failed: %w", err)
+	}
+
+	// Parse S2F32 TIACK
+	tiackNode, err := response.Get()
+	if err != nil {
+		return 0, fmt.Errorf("gem: malformed S2F32: %w", err)
+	}
+
+	binNode, ok := tiackNode.(*ast.BinaryNode)
+	if !ok {
+		return 0, fmt.Errorf("gem: S2F32 TIACK not binary")
+	}
+
+	values, ok := binNode.Values().([]int)
+	if !ok || len(values) == 0 {
+		return 0, fmt.Errorf("gem: S2F32 TIACK invalid")
+	}
+
+	return byte(values[0]), nil
+}

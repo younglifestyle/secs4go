@@ -1,0 +1,87 @@
+package main
+
+import (
+	"log"
+	"time"
+
+	"github.com/younglifestyle/secs4go/hsms"
+	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
+)
+
+func main() {
+	log.Println("Starting Go Host...")
+
+	// Create Host (Active)
+	// Connecting to the Python script at 127.0.0.1:5010
+	// Session ID should match what Python expects (10)
+	host := hsms.NewHsmsProtocol("127.0.0.1", 5010, true, 10, "GoHost")
+
+	// Enable automatic reconnection behavior (Phase 4 feature)
+	host.Timeouts().SetAutoReconnect(true)
+	host.Timeouts().SetMaxReconnectAttempts(5)
+	host.Timeouts().SetReconnectBackoffBase(1)
+
+	// Since we haven't implemented GEM handlers for S1F13/S1F14 yet in this test,
+	// we just rely on the HSMS protocol layer handling S9 errors.
+	// We can register a default handler or specific handlers if we want.
+	
+	// Register a catch-all handler just to log what we receive
+	// But S9 errors are handled internally by the protocol layer in protocol.go
+	
+	// Register handler for all streams to log them
+	// Since we don't have a catch-all registration in the public API yet (unless provided by library),
+	// we will rely on internal logging of protocol.go which logs "unhandled data message" or S9 errors.
+	// But let's try to register specific handlers for S9 to see them explicitly here.
+	
+	host.RegisterHandler(9, 1, func(msg *ast.DataMessage) (*ast.DataMessage, error) {
+		log.Printf("Received S9F1: %v", msg)
+		return nil, nil
+	})
+	host.RegisterHandler(9, 3, func(msg *ast.DataMessage) (*ast.DataMessage, error) {
+		log.Printf("Received S9F3: %v", msg)
+		return nil, nil
+	})
+	host.RegisterHandler(9, 5, func(msg *ast.DataMessage) (*ast.DataMessage, error) {
+		log.Printf("Received S9F5: %v", msg)
+		return nil, nil
+	})
+	host.RegisterHandler(9, 7, func(msg *ast.DataMessage) (*ast.DataMessage, error) {
+		log.Printf("Received S9F7: %v", msg)
+		return nil, nil
+	})
+	host.RegisterHandler(9, 9, func(msg *ast.DataMessage) (*ast.DataMessage, error) {
+		log.Printf("Received S9F9: %v", msg)
+		return nil, nil
+	})
+	host.RegisterHandler(9, 11, func(msg *ast.DataMessage) (*ast.DataMessage, error) {
+		log.Printf("Received S9F11: %v", msg)
+		return nil, nil
+	})
+
+	// Handler for S1F13 (Establish Communications Request)
+	// Python secsgem sends this automatically. We must reply with S1F14 to keep connection alive.
+	host.RegisterHandler(1, 13, func(msg *ast.DataMessage) (*ast.DataMessage, error) {
+		log.Printf("Received S1F13: Establish Communications Request")
+		
+		// Build S1F14 (Establish Communications Acknowledge)
+		// Structure: L, 2, <B COMMACK>, <L, 0>
+		commack := byte(0) // 0 = Accepted
+		body := ast.NewListNode(
+			ast.NewBinaryNode(commack),
+			ast.NewListNode(),
+		)
+		
+		reply := ast.NewDataMessage("EstablishCommAck", 1, 14, 0, "H->E", body)
+		return reply, nil
+	})
+	
+	host.Enable()
+	
+	log.Println("Host enabled, attempting to connect...")
+
+	// Keep running for 30 seconds to allow the test to complete
+	time.Sleep(30 * time.Second)
+
+	log.Println("Stopping Host...")
+	host.Disable()
+}

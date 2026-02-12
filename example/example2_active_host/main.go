@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/spf13/cast"
+
 	"log"
 	"os"
 	"os/signal"
@@ -95,7 +95,7 @@ func installHostCallbacks(handler *gem.GemHandler, eventCh chan<- gem.EventRepor
 
 	handler.Events().S9ErrorReceived.AddCallback(func(data map[string]interface{}) {
 		if info, ok := data["error"].(*hsms.S9ErrorInfo); ok {
-			log.Printf("S9 Error Received: Stream=%d Function=%d Text=%s Data=%X", 
+			log.Printf("S9 Error Received: Stream=%d Function=%d Text=%s Data=%X",
 				info.ErrorCode, info.ErrorCode, info.ErrorText, info.SystemBytes)
 		}
 	})
@@ -167,11 +167,6 @@ func runStatusPolling(handler *gem.GemHandler) {
 	ids := make([]interface{}, 0, len(infos))
 	for _, info := range infos {
 		log.Printf("SVID=%v NAME=%s UNIT=%s", info.ID, info.Name, info.Unit)
-
-		// 过滤保留 SVID（1001..1005）
-		if n := cast.ToInt(info.ID); n >= 1001 && n <= 1005 {
-			continue
-		}
 
 		// 只请求我们关心的（也可以放行全部非保留项）
 		if n, ok := info.ID.(int64); ok {

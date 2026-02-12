@@ -1,0 +1,126 @@
+package main
+
+import (
+	"log"
+	"time"
+
+	"github.com/younglifestyle/secs4go/gem"
+	"github.com/younglifestyle/secs4go/hsms"
+)
+
+func main() {
+	log.Println("==========================================================")
+	log.Println("P2 Clock Synchronization Test (Go Host)")
+	log.Println("==========================================================")
+	log.Println("Connecting to: 127.0.0.1:5030 (Active mode)")
+	log.Println("Test coverage:")
+	log.Println("  - S2F17/F18: Request equipment time")
+	log.Println("  - S2F31/F32: Set equipment time")
+	log.Println("==========================================================\n")
+
+	// Create Host (Active mode) connecting to Python equipment at port 5030
+	protocol := hsms.NewHsmsProtocol("127.0.0.1", 5030, true, 10, "GoHost")
+	protocol.Timeouts().SetAutoReconnect(true)
+
+	opts := gem.Options{
+		Protocol:   protocol,
+		DeviceType: gem.DeviceHost,
+		DeviceID:   10,
+	}
+
+	handler, err := gem.NewGemHandler(opts)
+	if err != nil {
+		log.Fatalf("Failed to create GEM handler: %v", err)
+	}
+
+	handler.Enable()
+	defer handler.Disable()
+
+	log.Println("Host enabled. Waiting for connection...")
+	time.Sleep(3 * time.Second)
+
+	// Test 1: Request DateTime (S2F17/F18)
+	log.Println("\n--- Test 1: Request Equipment Time (S2F17/F18) ---")
+	equipTime, err := handler.RequestDateTime()
+	if err != nil {
+		log.Fatalf("❌ S2F17 failed: %v", err)
+	}
+	log.Printf("✓ Received equipment time: %s", equipTime)
+
+	// Verify format (should be YYYYMMDDhhmmss00)
+	if len(equipTime) != 16 {
+		log.Fatalf("❌ Invalid time format: expected 16 chars, got %d", len(equipTime))
+	}
+	log.Printf("✓ Time format valid (16 characters)")
+
+	// Test 2: Set DateTime (S2F31/F32)
+	log.Println("\n--- Test 2: Set Equipment Time (S2F31/F32) ---")
+	
+	// Set time to current time + 1 minute
+	newTime := time.Now().Add(1 * time.Minute)
+	timeStr := newTime.Format("20060102150405") + "00"
+	log.Printf("Setting time to: %s (current + 1 min)", timeStr)
+
+	tiack, err := handler.SetDateTime(timeStr)
+	if err != nil {
+		log.Fatalf("❌ S2F31 failed: %v", err)
+	}
+
+	switch tiack {
+	case 0:
+		log.Printf("✓ Time accepted (TIACK=0)")
+	case 1:
+		log.Printf("❌ Time rejected: Not allowed (TIACK=1)")
+	case 2:
+		log.Printf("❌ Time rejected: Out of sync limit (TIACK=2)")
+	default:
+		log.Printf("❌ Unknown TIACK code: %d", tiack)
+	}
+
+	// Test 3: Verify time was set
+	log.Println("\n--- Test 3: Verify Time Was Set ---")
+	verifyTime, err := handler.RequestDateTime()
+	if err != nil {
+		log.Fatalf("❌ S2F17 verification failed: %v", err)
+	}
+	log.Printf("✓ Equipment time after set: %s", verifyTime)
+
+	// Compare times (allow 2 second tolerance)
+	expectedTime := timeStr
+	timeDiff := abs(parseTime(verifyTime).Unix() - parseTime(expectedTime).Unix())
+	if timeDiff <= 2 {
+		log.Printf("✓ Time verified: difference=%ds (within tolerance)", timeDiff)
+	} else {
+		log.Printf("⚠ Time mismatch: difference=%ds (expected ≤2s)", timeDiff)
+	}
+
+	// Test 4: Invalid time format
+	log.Println("\n--- Test 4: Invalid Time Format (Error Handling) ---")
+	_, err = handler.SetDateTime("INVALID")
+	if err != nil {
+		log.Printf("✓ Correctly rejected invalid format: %v", err)
+	} else {
+		log.Printf("⚠ Should have rejected invalid format")
+	}
+
+	log.Println("\n==========================================================")
+	log.Println("All Clock Synchronization Tests Complete!")
+	log.Println("==========================================================")
+	
+	time.Sleep(1 * time.Second)
+}
+
+func parseTime(semicTime string) time.Time {
+	if len(semicTime) < 14 {
+		return time.Time{}
+	}
+	t, _ := time.Parse("20060102150405", semicTime[:14])
+	return t
+}
+
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}

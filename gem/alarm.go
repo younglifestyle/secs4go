@@ -2,14 +2,17 @@ package gem
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 )
 
 // Alarm represents a GEM alarm definition for equipment side.
 type Alarm struct {
-	ID   int
-	Text string
+	ID      int
+	Text    string
+	Enabled bool // Whether this alarm is enabled for reporting
+	Set     bool // Whether this alarm is currently active
 }
 
 // AlarmEvent describes an alarm notification received from the remote peer.
@@ -19,6 +22,16 @@ type AlarmEvent struct {
 	Set  bool
 }
 
+// AlarmInfo describes alarm information returned in S5F6/S5F8 responses.
+type AlarmInfo struct {
+	ID      int
+	Text    string
+	Set     bool // Currently active
+	Enabled bool // Enabled for reporting
+}
+
+// RegisterAlarm registers an alarm definition on the equipment.
+// Alarms are enabled by default.
 func (g *GemHandler) RegisterAlarm(alarm Alarm) {
 	g.alarmMu.Lock()
 	defer g.alarmMu.Unlock()
@@ -26,10 +39,13 @@ func (g *GemHandler) RegisterAlarm(alarm Alarm) {
 	if g.alarms == nil {
 		g.alarms = make(map[int]Alarm)
 	}
+	// Default to enabled if not explicitly set
+	alarm.Enabled = true
 	g.alarms[alarm.ID] = alarm
 }
 
 // RaiseAlarm notifies the remote peer about an alarm state change (equipment only).
+// Only sends S5F1 if the alarm is enabled.
 func (g *GemHandler) RaiseAlarm(alarmID int, set bool) error {
 	if g.deviceType != DeviceEquipment {
 		return ErrOperationNotSupported
@@ -38,9 +54,20 @@ func (g *GemHandler) RaiseAlarm(alarmID int, set bool) error {
 		return err
 	}
 
-	alarm, ok := g.lookupAlarm(alarmID)
+	g.alarmMu.Lock()
+	alarm, ok := g.alarms[alarmID]
 	if !ok {
+		g.alarmMu.Unlock()
 		return fmt.Errorf("gem: unknown alarm %d", alarmID)
+	}
+	alarm.Set = set
+	g.alarms[alarmID] = alarm
+	enabled := alarm.Enabled
+	g.alarmMu.Unlock()
+
+	// Only send S5F1 if alarm is enabled
+	if !enabled {
+		return nil
 	}
 
 	msg := g.buildS5F1(alarm, set)
@@ -58,6 +85,36 @@ func (g *GemHandler) lookupAlarm(id int) (Alarm, bool) {
 
 	alarm, ok := g.alarms[id]
 	return alarm, ok
+}
+
+// getAlarmList returns all registered alarms sorted by ID.
+func (g *GemHandler) getAlarmList() []AlarmInfo {
+	g.alarmMu.RLock()
+	defer g.alarmMu.RUnlock()
+
+	list := make([]AlarmInfo, 0, len(g.alarms))
+	for _, a := range g.alarms {
+		list = append(list, AlarmInfo{
+			ID:      a.ID,
+			Text:    a.Text,
+			Set:     a.Set,
+			Enabled: a.Enabled,
+		})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	return list
+}
+
+// getEnabledAlarmList returns only enabled alarms sorted by ID.
+func (g *GemHandler) getEnabledAlarmList() []AlarmInfo {
+	all := g.getAlarmList()
+	enabled := make([]AlarmInfo, 0, len(all))
+	for _, a := range all {
+		if a.Enabled {
+			enabled = append(enabled, a)
+		}
+	}
+	return enabled
 }
 
 func (g *GemHandler) buildS5F1(alarm Alarm, set bool) *ast.DataMessage {

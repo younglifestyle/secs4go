@@ -1,0 +1,15 @@
+
+import secsgem.secs.functions
+import inspect
+
+print("Checking for S9F13/S09F13 in secsgem...")
+if hasattr(secsgem.secs.functions, "S09F13"):
+    print("S09F13 found!")
+    print(inspect.signature(secsgem.secs.functions.S09F13))
+else:
+    print("S09F13 NOT found.")
+
+# Check for Conversation Timeout logic in GemHandler
+print("\nChecking for Conversation Timeout logic in GemEquipmentHandler...")
+from secsgem.gem import GemEquipmentHandler
+print(f"Has conversation_timeout? {'conversation_timeout' in dir(GemEquipmentHandler)}")

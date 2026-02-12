@@ -88,6 +88,8 @@ type GemHandler struct {
 	remoteMu             sync.RWMutex
 	remoteCommandHandler RemoteCommandHandler
 
+	clockManager *ClockManager
+
 	logger *log.Logger
 
 	controlAttemptInProgress *atomic.Bool
@@ -131,6 +133,7 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		reports:                  make(map[string]*ReportDefinition),
 		eventLinks:               make(map[string]*collectionEventLink),
 		processStore:             newProcessProgramStore(),
+		clockManager:             NewClockManager(),
 		logger:                   log.New(log.Writer(), "gem_handler: ", log.LstdFlags),
 		controlAttemptInProgress: atomic.NewBool(false),
 	}
@@ -158,6 +161,8 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		handler.protocol.RegisterHandler(5, 1, handler.onS5F1)
 		handler.protocol.RegisterHandler(6, 11, handler.onS6F11)
 	} else {
+		handler.protocol.RegisterHandler(2, 17, handler.onS2F17)
+		handler.protocol.RegisterHandler(2, 31, handler.onS2F31)
 		handler.protocol.RegisterHandler(2, 41, handler.onS2F41)
 		handler.protocol.RegisterHandler(1, 3, handler.onS1F3)
 		handler.protocol.RegisterHandler(1, 11, handler.onS1F11)
@@ -167,6 +172,9 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		handler.protocol.RegisterHandler(2, 33, handler.onS2F33)
 		handler.protocol.RegisterHandler(2, 35, handler.onS2F35)
 		handler.protocol.RegisterHandler(2, 37, handler.onS2F37)
+		handler.protocol.RegisterHandler(5, 3, handler.onS5F3)
+		handler.protocol.RegisterHandler(5, 5, handler.onS5F5)
+		handler.protocol.RegisterHandler(5, 7, handler.onS5F7)
 		handler.protocol.RegisterHandler(6, 15, handler.onS6F15)
 		handler.protocol.RegisterHandler(7, 3, handler.onS7F3)
 		handler.protocol.RegisterHandler(7, 5, handler.onS7F5)

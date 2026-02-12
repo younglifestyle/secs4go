@@ -28,18 +28,18 @@ class EnhancedEquipment(secsgem.gem.GemEquipmentHandler):
         self.status_variables[1001] = secsgem.gem.StatusVariable(
             1001, "Clock", "", secsgem.secs.variables.String
         )
-        self.status_variables[1002] = secsgem.gem.StatusVariable(
-            1002, "ControlState", "", secsgem.secs.variables.U1
-        )
-        self.status_variables[1003] = secsgem.gem.StatusVariable(
-            1003, "EventsEnabled", "", secsgem.secs.variables.U1
-        )
-        self.status_variables[1004] = secsgem.gem.StatusVariable(
-            1004, "AlarmsEnabled", "", secsgem.secs.variables.U1
-        )
-        self.status_variables[1005] = secsgem.gem.StatusVariable(
-            1005, "AlarmsSet", "", secsgem.secs.variables.U1
-        )
+        # self.status_variables[1002] = secsgem.gem.StatusVariable(
+        #     1002, "ControlState", "", secsgem.secs.variables.U1
+        # )
+        # self.status_variables[1003] = secsgem.gem.StatusVariable(
+        #     1003, "EventsEnabled", "", secsgem.secs.variables.U1
+        # )
+        # self.status_variables[1004] = secsgem.gem.StatusVariable(
+        #     1004, "AlarmsEnabled", "", secsgem.secs.variables.U1
+        # )
+        # self.status_variables[1005] = secsgem.gem.StatusVariable(
+        #     1005, "AlarmsSet", "", secsgem.secs.variables.U1
+        # )
 
         # ---- 自定义 SVID：用非保留号 1101 代表温度 ----
         self.status_variables.update(
@@ -104,7 +104,6 @@ class EnhancedEquipment(secsgem.gem.GemEquipmentHandler):
     def _normalize_id(value):
         return value.get() if hasattr(value, "get") else value
 
-    # ---------- callbacks ----------
     def on_sv_value_request(self, _svid, sv):
         if sv.svid == 1101:
             self.temperature = max(200, min(260, self.temperature + random.randint(-2, 2)))
@@ -116,6 +115,8 @@ class EnhancedEquipment(secsgem.gem.GemEquipmentHandler):
             return sv.value_type(self.run_id)
         if sv.svid == 1001:  # Clock
             return sv.value_type(time.strftime("%Y%m%d%H%M%S"))
+        if sv.svid in [1002, 1003, 1004, 1005]:
+            return sv.value_type(0)
         return []
 
     def on_ec_value_request(self, ecid, ec):
