@@ -32,6 +32,7 @@ type Events struct {
 	RemoteCommandReceived *common.Event
 	EventReportReceived   *common.Event
 	ControlStateChanged   *common.Event
+	S9ErrorReceived       *common.Event
 }
 
 // GemHandler orchestrates GEM handshake and selected services on top of HSMS protocol.
@@ -120,6 +121,7 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 			RemoteCommandReceived: &common.Event{},
 			EventReportReceived:   &common.Event{},
 			ControlStateChanged:   &common.Event{},
+			S9ErrorReceived:       &common.Event{},
 		},
 		alarms:                   make(map[int]Alarm),
 		statusVars:               make(map[string]*StatusVariable),
@@ -134,6 +136,13 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 	}
 
 	handler.setCommunicationState(CommunicationStateNotCommunicating)
+
+	handler.protocol.OnS9Error = func(errorInfo *hsms.S9ErrorInfo) {
+		handler.events.S9ErrorReceived.Fire(map[string]interface{}{
+			"handler": handler,
+			"error":   errorInfo,
+		})
+	}
 
 	handler.protocol.ConfigureLogging(opts.Logging.toConfig(handler.logger.Writer()))
 
@@ -927,4 +936,9 @@ func (g *GemHandler) getRemoteCommandHandler() RemoteCommandHandler {
 	g.remoteMu.RLock()
 	defer g.remoteMu.RUnlock()
 	return g.remoteCommandHandler
+}
+
+// Protocol returns the underlying HSMS protocol instance.
+func (g *GemHandler) Protocol() *hsms.HsmsProtocol {
+	return g.protocol
 }

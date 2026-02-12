@@ -58,6 +58,9 @@ func streamFunctionKey(stream, function int) string {
 }
 
 // HsmsProtocol represents the base class for creating Host/Equipment models.
+var (
+	ErrT3Timeout = errors.New("T3 timeout")
+)
 type HsmsProtocol struct {
 	remoteAddress string
 	remotePort    int
@@ -101,6 +104,14 @@ type HsmsProtocol struct {
 
 	serverMu sync.Mutex
 	server   *link.Server
+
+	// Reconnection state
+	reconnectAttempts  int
+	lastDisconnectTime time.Time
+	
+	// Callbacks
+	// OnS9Error is called when an S9 error message is sent or received
+	OnS9Error func(errorInfo *S9ErrorInfo)
 }
 
 // NewHsmsProtocol creates a new HsmsProtocol instance.
@@ -380,9 +391,33 @@ func (p *HsmsProtocol) startConnectThread() {
 					return
 				}
 				p.logger.Println("connect error:", err)
-				time.Sleep(time.Duration(p.timeouts.T5ConnSeparateTimeout()) * time.Second)
+				
+				// Check if auto-reconnect is enabled
+				if !p.timeouts.AutoReconnect() {
+					p.logger.Println("auto-reconnect disabled, stopping connection attempts")
+					return
+				}
+				
+				// Increment reconnect attempts
+				p.reconnectAttempts++
+				
+				// Check max attempts
+				maxAttempts := p.timeouts.MaxReconnectAttempts()
+				if maxAttempts > 0 && p.reconnectAttempts > maxAttempts {
+					p.logger.Printf("max reconnect attempts (%d) reached, stopping", maxAttempts)
+					p.reconnectAttempts = 0
+					return
+				}
+				
+				// Calculate exponential backoff delay
+				delay := p.calculateBackoffDelay()
+				p.logger.Printf("reconnect attempt %d, waiting %v", p.reconnectAttempts, delay)
+				time.Sleep(delay)
 				continue
 			}
+			// Connection successful, reset reconnect counter
+			p.reconnectAttempts = 0
+			
 			if !p.enabled.Load() {
 				return
 			}
@@ -398,6 +433,7 @@ func (p *HsmsProtocol) startConnectThread() {
 			time.Sleep(time.Second)
 			continue
 		}
+
 	}
 }
 
@@ -454,7 +490,7 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		ctrl, ok := message.(*ast.ControlMessage)
 		if !ok {
 			p.logger.Println("received malformed select.req")
-			p.hsmsConnection.sendReject(message, 2)
+			p.hsmsConnection.sendReject(message, RejectReasonBusyOrAlreadyActive)
 			return
 		}
 
@@ -481,7 +517,7 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 			}
 			if !acceptMismatch {
 				p.logger.Printf("select.req session mismatch: got %d expected %d", receivedSession, expectedSession)
-				p.hsmsConnection.sendSelectRsp(message, 1)
+				p.hsmsConnection.sendSelectRsp(message, ControlStatusDenied)
 				_ = p.hsmsConnection.Close()
 				p.connected.Store(false)
 				if err := p.connectionState.Disconnect(); err != nil {
@@ -492,10 +528,10 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 
 		if !p.connected.Load() {
-			p.hsmsConnection.sendReject(message, 4)
+			p.hsmsConnection.sendReject(message, RejectReasonNotReady)
 			return
 		}
-		p.hsmsConnection.sendSelectRsp(message, 0)
+		p.hsmsConnection.sendSelectRsp(message, ControlStatusAccepted)
 		if err := p.connectionState.Select(); err != nil {
 			p.logger.Println("change state to SELECTED error:", err)
 		}
@@ -509,7 +545,7 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 			p.logger.Println("received malformed select.rsp")
 			return
 		}
-		if ctrl.Status() != 0 {
+		if ControlStatus(ctrl.Status()) != ControlStatusAccepted {
 			p.logger.Printf("select.rsp returned status %d", ctrl.Status())
 			p.connected.Store(false)
 			if err := p.connectionState.Disconnect(); err != nil {
@@ -524,10 +560,10 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 
 	case hsms.DeselectReqStr:
 		if !p.connected.Load() {
-			p.hsmsConnection.sendReject(message, 4)
+			p.hsmsConnection.sendReject(message, RejectReasonNotReady)
 			return
 		}
-		p.hsmsConnection.sendDeselectRsp(message, 0)
+		p.hsmsConnection.sendDeselectRsp(message, ControlStatusAccepted)
 		if err := p.connectionState.Deselect(); err != nil {
 			p.logger.Println("change state to NOT-SELECTED error:", err)
 		}
@@ -542,13 +578,14 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 
 	case hsms.LinktestReqStr:
 		if !p.connected.Load() {
-			p.hsmsConnection.sendReject(message, 4)
+			p.hsmsConnection.sendReject(message, RejectReasonNotReady)
 			return
 		}
 		p.hsmsConnection.sendLinkTestRsp(message)
 
 	case hsms.SeparateReqStr:
 		p.logger.Println("received separate.req; closing session")
+		p.onDisconnection()
 		p.stopLinktestTimer()
 		p.connected.Store(false)
 		if err := p.connectionState.Disconnect(); err != nil {
@@ -715,6 +752,11 @@ func (p *HsmsProtocol) logControlMessage(direction string, message ast.HSMSMessa
 }
 
 func (p *HsmsProtocol) handleDataMessage(message *ast.DataMessage) {
+	// Check for S9 messages to trigger callback
+	if message.StreamCode() == 9 {
+		p.triggerS9ErrorCallback(message)
+	}
+
 	handler := p.lookupHandler(message.StreamCode(), message.FunctionCode())
 	if handler != nil {
 		p.invokeHandler(handler, message)
@@ -730,7 +772,8 @@ func (p *HsmsProtocol) handleDataMessage(message *ast.DataMessage) {
 		return
 	}
 
-	//p.logger.Printf("unhandled data message S%02dF%02d", message.StreamCode(), message.FunctionCode())
+	// No handler found - send appropriate S9 error message
+	p.sendS9ErrorForUnrecognized(message)
 }
 
 func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.Session) {
@@ -904,7 +947,9 @@ func (p *HsmsProtocol) SendAndWait(message *ast.DataMessage) (*ast.DataMessage, 
 
 	resp, err := queue.Get(p.timeouts.T3ReplyTimeout())
 	if err != nil {
-		return nil, ErrTimeout
+		// On T3 timeout (Wait Bit=True was sent), send S9F9
+		p.sendS9F9TransactionTimeout(outgoing)
+		return nil, ErrT3Timeout
 	}
 
 	switch value := resp.(type) {
@@ -1014,4 +1059,41 @@ func (p *HsmsProtocol) CurrentState() string {
 // Timeouts returns protocol timeout configuration.
 func (p *HsmsProtocol) Timeouts() *SecsTimeout {
 	return p.timeouts
+}
+
+// triggerS9ErrorCallback creates an S9ErrorInfo and calls the OnS9Error callback
+func (p *HsmsProtocol) triggerS9ErrorCallback(msg *ast.DataMessage) {
+	if p.OnS9Error == nil {
+		return
+	}
+
+	function := msg.FunctionCode()
+	var errorText string
+	switch function {
+	case 1:
+		errorText = ErrTextUnrecognizedDeviceID
+	case 3:
+		errorText = ErrTextUnrecognizedStream
+	case 5:
+		errorText = ErrTextUnrecognizedFunction
+	case 7:
+		errorText = ErrTextIllegalData
+	case 9:
+		errorText = ErrTextTransactionTimeout
+	case 11:
+		errorText = ErrTextDataTooLong
+	case 13:
+		errorText = ErrTextConversationTimeout
+	default:
+		errorText = "Unknown S9 Error"
+	}
+
+	errorInfo := &S9ErrorInfo{
+		ErrorCode:       function,
+		ErrorText:       errorText,
+		OriginalMessage: nil, // We don't have original message here easily for RX
+		SystemBytes:     msg.SystemBytes(),
+	}
+	
+	p.OnS9Error(errorInfo)
 }

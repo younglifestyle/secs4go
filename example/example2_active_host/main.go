@@ -92,6 +92,13 @@ func installHostCallbacks(handler *gem.GemHandler, eventCh chan<- gem.EventRepor
 			}
 		}
 	})
+
+	handler.Events().S9ErrorReceived.AddCallback(func(data map[string]interface{}) {
+		if info, ok := data["error"].(*hsms.S9ErrorInfo); ok {
+			log.Printf("S9 Error Received: Stream=%d Function=%d Text=%s Data=%X", 
+				info.ErrorCode, info.ErrorCode, info.ErrorText, info.SystemBytes)
+		}
+	})
 }
 
 //func runStatusPolling(handler *gem.GemHandler) {

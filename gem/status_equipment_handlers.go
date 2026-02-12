@@ -89,7 +89,7 @@ func (g *GemHandler) onS2F15(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	updates, err := parseEquipmentConstantUpdateList(msg)
 	if err != nil {
 		g.logger.Println("failed to parse S2F15:", err)
-		return g.buildS2F16(2), nil
+		return g.buildS2F16(ECACKInvalidData), nil
 	}
 
 	ack := g.applyEquipmentConstantUpdates(updates)
@@ -376,9 +376,9 @@ func parseEquipmentConstantUpdateList(msg *ast.DataMessage) ([]equipmentConstant
 	return updates, nil
 }
 
-func (g *GemHandler) applyEquipmentConstantUpdates(updates []equipmentConstantUpdate) int {
+func (g *GemHandler) applyEquipmentConstantUpdates(updates []equipmentConstantUpdate) ECACKCode {
 	if len(updates) == 0 {
-		return 0
+		return ECACKAccepted
 	}
 
 	g.ecMu.RLock()
@@ -386,10 +386,10 @@ func (g *GemHandler) applyEquipmentConstantUpdates(updates []equipmentConstantUp
 
 	for _, upd := range updates {
 		if !upd.ok {
-			return 2
+			return ECACKInvalidData
 		}
 		if _, ok := g.equipmentConstants[upd.id.key]; !ok {
-			return 1
+			return ECACKDoesNotExist
 		}
 	}
 
@@ -397,9 +397,9 @@ func (g *GemHandler) applyEquipmentConstantUpdates(updates []equipmentConstantUp
 		constant := g.equipmentConstants[upd.id.key]
 		if err := constant.ApplyValue(upd.value); err != nil {
 			g.logger.Printf("equipment constant %v update rejected: %v", constant.ID(), err)
-			return 3
+			return ECACKValidationError
 		}
 	}
 
-	return 0
+	return ECACKAccepted
 }

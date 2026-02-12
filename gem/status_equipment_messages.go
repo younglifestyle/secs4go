@@ -84,9 +84,8 @@ func (g *GemHandler) buildS2F15(updates []EquipmentConstantUpdate) (*ast.DataMes
 	return ast.NewDataMessage("EquipmentConstantSend", 2, 15, 1, "H->E", body), nil
 }
 
-func (g *GemHandler) buildS2F16(ack int) *ast.DataMessage {
-	//body := ast.NewListNode(ast.NewBinaryNode(ack))
-	body := ast.NewBinaryNode(ack)
+func (g *GemHandler) buildS2F16(ack ECACKCode) *ast.DataMessage {
+	body := ast.NewBinaryNode(ack.Int())
 	return ast.NewDataMessage("EquipmentConstantAcknowledge", 2, 16, 0, "H<-E", body)
 }
 
@@ -130,9 +129,8 @@ func (g *GemHandler) buildS2F33(defs []ReportDefinitionRequest) (*ast.DataMessag
 	return ast.NewDataMessage("DefineReport", 2, 33, 1, "H->E", body), nil
 }
 
-func (g *GemHandler) buildS2F34(ack int) *ast.DataMessage {
-	//body := ast.NewListNode(ast.NewBinaryNode(ack))
-	body := ast.NewBinaryNode(ack)
+func (g *GemHandler) buildS2F34(ack DRACKCode) *ast.DataMessage {
+	body := ast.NewBinaryNode(ack.Int())
 	return ast.NewDataMessage("DefineReportAcknowledge", 2, 34, 0, "H<-E", body)
 }
 
@@ -158,9 +156,8 @@ func (g *GemHandler) buildS2F35(links []EventReportLinkRequest) (*ast.DataMessag
 	return ast.NewDataMessage("LinkEventReport", 2, 35, 1, "H->E", body), nil
 }
 
-func (g *GemHandler) buildS2F36(ack int) *ast.DataMessage {
-	//body := ast.NewListNode(ast.NewBinaryNode(ack))
-	body := ast.NewBinaryNode(ack)
+func (g *GemHandler) buildS2F36(ack LRACKCode) *ast.DataMessage {
+	body := ast.NewBinaryNode(ack.Int())
 	return ast.NewDataMessage("LinkEventReportAcknowledge", 2, 36, 0, "H<-E", body)
 }
 
@@ -173,9 +170,8 @@ func (g *GemHandler) buildS2F37(enable bool, ceids []idInfo) *ast.DataMessage {
 	return ast.NewDataMessage("EnableEventReport", 2, 37, 1, "H->E", body)
 }
 
-func (g *GemHandler) buildS2F38(ack int) *ast.DataMessage {
-	//body := ast.NewListNode(ast.NewBinaryNode(ack))
-	body := ast.NewBinaryNode(ack)
+func (g *GemHandler) buildS2F38(ack ERACKCode) *ast.DataMessage {
+	body := ast.NewBinaryNode(ack.Int())
 	return ast.NewDataMessage("EnableEventReportAcknowledge", 2, 38, 0, "H<-E", body)
 }
 

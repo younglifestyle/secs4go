@@ -40,6 +40,25 @@ This library is only a portion, completing the most fundamental part. Use it wit
 - Alarm reporting: register alarms via \\RegisterAlarm\\ and trigger S5F1/S5F2 with \\RaiseAlarm\\ / \\ClearAlarm\\.
 - Remote command support: host calls `SendRemoteCommand` (S2F41/42, returns `RemoteCommandResult`) while equipment hooks `SetRemoteCommandHandler`.
 
+### Error Handling
+
+The library implements robust error handling and reporting:
+-   **Automatic S9 Generation**: Automatically sends S9 'Error' messages for protocol violations:
+    -   S9F1 (Unrecognized Device ID)
+    -   S9F3 (Unrecognized Stream)
+    -   S9F5 (Unrecognized Function)
+    -   S9F7 (Illegal Data)
+    -   S9F9 (Transaction Timer Timeout) - triggered by T3 expiration
+    -   S9F11 (Data Too Long)
+-   **Event Notification**: The `GemHandler` exposes an `S9ErrorReceived` event to notify the application of these errors.
+    ```go
+    handler.Events().S9ErrorReceived.AddCallback(func(data map[string]interface{}) {
+        if info, ok := data["error"].(*hsms.S9ErrorInfo); ok {
+             log.Printf("S9 Error: %s", info.ErrorText)
+        }
+    })
+    ```
+
 ### Integration
 
 - A reference integration test lives in \\gem/handler_integration_test.go\\ (skipped by default). Remove the \\	.Skip\\ line and run \\go test ./gem -run TestGemHandlerIntegration -count=1\\ to exercise a full Go host/equipment loopback.

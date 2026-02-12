@@ -8,28 +8,6 @@ import (
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 )
 
-const (
-	drAckOK             = 0 // Accept
-	drAckInsufficient   = 1 // Denied, insufficient space
-	drAckInvalidFormat  = 2 // Denied, invalid format
-	drAckRPTIDRedefined = 3 // Denied, RPTID already defined
-	drAckVIDUnknown     = 4 // Denied, VID doesn't exist
-)
-
-const (
-	lrAckOK            = 0 // Acknowledge
-	lrAckInsufficient  = 1 // Denied, insufficient space
-	lrAckInvalidFormat = 2 // Denied, invalid format
-	lrAckCEIDLinked    = 3 // Denied, CEID already linked
-	lrAckCEIDUnknown   = 4 // Denied, CEID doesn't exist
-	lrAckRPTIDUnknown  = 5 // Denied, RPTID doesn't exist
-)
-
-const (
-	erAckAccepted    = 0
-	erAckCEIDUnknown = 1
-)
-
 // RegisterDataVariable installs an equipment-side data variable definition.
 func (g *GemHandler) RegisterDataVariable(variable *DataVariable) error {
 	if variable == nil {
@@ -202,19 +180,19 @@ func (g *GemHandler) onS2F33(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	reports, err := parseReportDefinitionList(msg)
 	if err != nil {
 		g.logger.Println("failed to parse S2F33:", err)
-		return g.buildS2F34(drAckInvalidFormat), nil
+		return g.buildS2F34(DRACKInvalidFormat), nil
 	}
 	ack := g.handleReportDefinitions(reports)
 	return g.buildS2F34(ack), nil
 }
 
-func (g *GemHandler) handleReportDefinitions(reports []reportDefinitionMessage) int {
+func (g *GemHandler) handleReportDefinitions(reports []reportDefinitionMessage) DRACKCode {
 	if len(reports) == 0 {
 		g.reportMu.Lock()
 		g.eventLinks = make(map[string]*collectionEventLink)
 		g.reports = make(map[string]*ReportDefinition)
 		g.reportMu.Unlock()
-		return drAckOK
+		return DRACKAccept
 	}
 
 	g.reportMu.Lock()
@@ -222,14 +200,14 @@ func (g *GemHandler) handleReportDefinitions(reports []reportDefinitionMessage) 
 
 	for _, rpt := range reports {
 		if _, exists := g.reports[rpt.id.key]; exists && len(rpt.vids) > 0 {
-			return drAckRPTIDRedefined
+			return DRACKRPTIDRedefined
 		}
 	}
 
 	for _, rpt := range reports {
 		for _, vid := range rpt.vids {
 			if !g.vidExists(vid.key) {
-				return drAckVIDUnknown
+				return DRACKVIDDoesNotExist
 			}
 		}
 	}
@@ -241,12 +219,12 @@ func (g *GemHandler) handleReportDefinitions(reports []reportDefinitionMessage) 
 		}
 		definition, err := newReportDefinition(rpt.id.raw, rpt.vids)
 		if err != nil {
-			return drAckInvalidFormat
+			return DRACKInvalidFormat
 		}
 		g.reports[rpt.id.key] = definition
 	}
 
-	return drAckOK
+	return DRACKAccept
 }
 
 func (g *GemHandler) removeReportUnlocked(reportKey string) {
@@ -277,14 +255,14 @@ func (g *GemHandler) onS2F35(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	links, err := parseEventReportLinkList(msg)
 	if err != nil {
 		g.logger.Println("failed to parse S2F35:", err)
-		return g.buildS2F36(lrAckInvalidFormat), nil
+		return g.buildS2F36(LRACKInvalidFormat), nil
 	}
 
 	ack := g.handleEventReportLinks(links)
 	return g.buildS2F36(ack), nil
 }
 
-func (g *GemHandler) handleEventReportLinks(links []eventReportLinkMessage) int {
+func (g *GemHandler) handleEventReportLinks(links []eventReportLinkMessage) LRACKCode {
 	g.collectionMu.RLock()
 	defer g.collectionMu.RUnlock()
 
@@ -293,16 +271,16 @@ func (g *GemHandler) handleEventReportLinks(links []eventReportLinkMessage) int 
 
 	for _, link := range links {
 		if _, ok := g.collectionEvents[link.ceid.key]; !ok {
-			return lrAckCEIDUnknown
+			return LRACKCEIDDoesNotExist
 		}
 		for _, rpt := range link.rptids {
 			if _, ok := g.reports[rpt.key]; !ok {
-				return lrAckRPTIDUnknown
+				return LRACKRPTIDDoesNotExist
 			}
 			if existing, ok := g.eventLinks[link.ceid.key]; ok {
 				for _, existingRpt := range existing.reports {
 					if existingRpt == rpt.key {
-						return lrAckCEIDLinked
+						return LRACKCEIDAlreadyLinked
 					}
 				}
 			}
@@ -325,24 +303,21 @@ func (g *GemHandler) handleEventReportLinks(links []eventReportLinkMessage) int 
 		}
 	}
 
-	return lrAckOK
+	return LRACKAccept
 }
 
 func (g *GemHandler) onS2F37(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	command, err := parseEventEnableMessage(msg)
 	if err != nil {
 		g.logger.Println("failed to parse S2F37:", err)
-		return g.buildS2F38(erAckCEIDUnknown), nil
+		return g.buildS2F38(ERACKCEIDUnknown), nil
 	}
 
-	ak := g.setCollectionEventState(command.enable, command.ceids)
-	if !ak {
-		return g.buildS2F38(erAckCEIDUnknown), nil
-	}
-	return g.buildS2F38(erAckAccepted), nil
+	ack := g.setCollectionEventState(command.enable, command.ceids)
+	return g.buildS2F38(ack), nil
 }
 
-func (g *GemHandler) setCollectionEventState(enable bool, ceids []idInfo) bool {
+func (g *GemHandler) setCollectionEventState(enable bool, ceids []idInfo) ERACKCode {
 	g.reportMu.Lock()
 	defer g.reportMu.Unlock()
 
@@ -350,17 +325,17 @@ func (g *GemHandler) setCollectionEventState(enable bool, ceids []idInfo) bool {
 		for _, link := range g.eventLinks {
 			link.enabled = enable
 		}
-		return true
+		return ERACKAccepted
 	}
 
 	for _, ce := range ceids {
 		if link, ok := g.eventLinks[ce.key]; ok {
 			link.enabled = enable
 		} else {
-			return false
+			return ERACKCEIDUnknown
 		}
 	}
-	return true
+	return ERACKAccepted
 }
 
 func (g *GemHandler) onS6F15(msg *ast.DataMessage) (*ast.DataMessage, error) {

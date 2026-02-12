@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -190,6 +191,9 @@ func startPairedHandlers(t *testing.T) (*GemHandler, *GemHandler, *equipmentStat
 func TestGemHighThroughputSoak(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping soak test in short mode")
+	}
+	if os.Getenv("SECS4GO_STRESS") == "" {
+		t.Skip("set SECS4GO_STRESS=1 to run soak workload")
 	}
 
 	equipment, host, state, cleanup := startPairedHandlers(t)

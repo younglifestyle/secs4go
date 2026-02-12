@@ -86,16 +86,16 @@ func (c *HsmsConnection) sendLinktestReq() {
 	}
 }
 
-func (c *HsmsConnection) sendDeselectRsp(message ast.HSMSMessage, selectStatus byte) {
-	response := ast.NewHSMSMessageDeselectRsp(message, selectStatus)
+func (c *HsmsConnection) sendDeselectRsp(message ast.HSMSMessage, status ControlStatus) {
+	response := ast.NewHSMSMessageDeselectRsp(message, byte(status))
 	c.hp.logControlMessage("TX", response)
 	if err := c.connection.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Println("send deselect.rsp error:", err)
 	}
 }
 
-func (c *HsmsConnection) sendSelectRsp(message ast.HSMSMessage, selectStatus byte) {
-	response := ast.NewHSMSMessageSelectRsp(message, selectStatus)
+func (c *HsmsConnection) sendSelectRsp(message ast.HSMSMessage, status ControlStatus) {
+	response := ast.NewHSMSMessageSelectRsp(message, byte(status))
 	c.hp.logControlMessage("TX", response)
 	if err := c.connection.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Println("send select.rsp error:", err)
@@ -110,8 +110,8 @@ func (c *HsmsConnection) sendLinkTestRsp(message ast.HSMSMessage) {
 	}
 }
 
-func (c *HsmsConnection) sendReject(message ast.HSMSMessage, reasonCode byte) {
-	reject := ast.NewHSMSMessageRejectReqFromMsg(message, reasonCode)
+func (c *HsmsConnection) sendReject(message ast.HSMSMessage, reason RejectReason) {
+	reject := ast.NewHSMSMessageRejectReqFromMsg(message, byte(reason))
 	c.hp.logControlMessage("TX", reject)
 	if err := c.connection.Send(reject.ToBytes()); err != nil {
 		c.hp.logger.Println("send reject.req error:", err)
@@ -144,7 +144,7 @@ func (c *HsmsConnection) sendSelectReq() error {
 	if !ok {
 		return fmt.Errorf("unexpected control response %T", ctrl)
 	}
-	if controlMsg.Status() != 0 {
+	if ControlStatus(controlMsg.Status()) != ControlStatusAccepted {
 		return fmt.Errorf("select.rsp returned status %d", controlMsg.Status())
 	}
 
@@ -177,7 +177,7 @@ func (c *HsmsConnection) sendDeselectReq() error {
 	if !ok {
 		return fmt.Errorf("unexpected control response %T", ctrl)
 	}
-	if controlMsg.Status() != 0 {
+	if ControlStatus(controlMsg.Status()) != ControlStatusAccepted {
 		return fmt.Errorf("deselect.rsp returned status %d", controlMsg.Status())
 	}
 

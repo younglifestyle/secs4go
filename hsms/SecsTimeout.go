@@ -16,6 +16,27 @@ type SecsTimeout struct {
 	// 开始获取数据到结束的时间间隔
 	// 45 ~ 65 秒最常见（测试时可能设 6~10 秒）
 	t8NetworkIntercharTimeout int
+
+	// Reconnection configuration
+	// Maximum number of reconnection attempts (0 = unlimited)
+	maxReconnectAttempts int
+	// Base delay for exponential backoff (in seconds)
+	reconnectBackoffBase int
+	// Maximum delay for reconnection backoff (in seconds)
+	reconnectBackoffMax int
+	// Whether to enable automatic reconnection
+	autoReconnect bool
+    
+    // Default device ID to use for S9 messages
+    deviceID int
+}
+
+func (t *SecsTimeout) SetDeviceID(id int) {
+    t.deviceID = id
+}
+
+func (t *SecsTimeout) DeviceID() int {
+    return t.deviceID
 }
 
 func NewSecsTimeout() *SecsTimeout {
@@ -26,6 +47,11 @@ func NewSecsTimeout() *SecsTimeout {
 		t6ControlTransTimeout:     5,
 		t7NotSelectTimeout:        10,
 		t8NetworkIntercharTimeout: 45,
+		// Reconnection defaults
+		maxReconnectAttempts:  10,
+		reconnectBackoffBase:  2,
+		reconnectBackoffMax:   60,
+		autoReconnect:         true,
 	}
 }
 
