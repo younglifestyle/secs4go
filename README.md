@@ -40,6 +40,66 @@ This library is only a portion, completing the most fundamental part. Use it wit
 - Alarm reporting: register alarms via \\RegisterAlarm\\ and trigger S5F1/S5F2 with \\RaiseAlarm\\ / \\ClearAlarm\\.
 - Remote command support: host calls `SendRemoteCommand` (S2F41/42, returns `RemoteCommandResult`) while equipment hooks `SetRemoteCommandHandler`.
 
+### Logging Configuration
+
+The library uses a plugin-style logger. By default, it is completely silent (Zero Mental Burden). You can configure it for:
+
+1.  **Standard Console Logging**:
+    ```go
+    opts := gem.Options{
+        // ...
+        Logger: gem.NewStdLogger(os.Stdout, "gem: "),
+    }
+    ```
+
+2.  **Structured File Logging (with Rotation)**:
+    Requires `go.uber.org/zap` and `gopkg.in/natefinch/lumberjack.v2`.
+    ```go
+    // 1. App Logger (Info/Error/Debug messages)
+    appLogger := gem.NewZapLogger(gem.ZapLoggerOptions{
+        LogFile: "app.log",
+        MaxSize: 10, // MB
+        MaxBackups: 5,
+        DebugLevel: true,
+    })
+
+    opts := gem.Options{
+        // ...
+        Logger: appLogger,
+
+        // 2. Protocol Trace Logging (SML/Binary)
+        Logging: gem.LoggingOptions{
+            Enabled:    true,
+            LogFile:    "protocol.log", // Separate rotation for SML traces
+            MaxSize:    100, // MB
+            MaxBackups: 10,
+        },
+    }
+    ```
+
+#### Parameter Reference
+
+**App Logger (`gem.ZapLoggerOptions`)**
+| Parameter | Type | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `LogFile` | string | Log file path. If empty, logs to stdout. | "" |
+| `MaxSize` | int | Max size (MB) before rotation. | 100 |
+| `MaxBackups` | int | Max number of old files to keep. | - |
+| `MaxAge` | int | Max days to keep old files. | - |
+| `Compress` | bool | Gzip compress old files. | false |
+| `DebugLevel` | bool | Enable DEBUG level logs. | false |
+| `Console` | bool | Print to stdout even if LogFile is set. | false |
+
+**Protocol Logger (`gem.LoggingOptions`)**
+| Parameter | Type | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `Enabled` | bool | Enable SML/Binary protocol tracing. | false |
+| `LogFile` | string | Log file path. If empty, logs to stderr. | "" |
+| `MaxSize` | int | Max size (MB) before rotation. | 100 |
+| `MaxBackups` | int | Max number of old files to keep. | - |
+| `MaxAge` | int | Max days to keep old files. | - |
+| `Compress` | bool | Gzip compress old files. | false |
+
 ### Error Handling
 
 The library implements robust error handling and reporting:

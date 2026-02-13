@@ -65,7 +65,7 @@ func (c *HsmsConnection) sendRejectRsp(packet ast.HSMSMessage, reasonCode byte) 
 	rejectReq := ast.NewHSMSMessageRejectReqFromMsg(packet, reasonCode)
 	c.hp.logControlMessage("TX", rejectReq)
 	if err := c.connection.Send(rejectReq.ToBytes()); err != nil {
-		c.hp.logger.Println("send reject rsp error:", err)
+		c.hp.logger.Error("send reject rsp failed", "error", err)
 	}
 }
 
@@ -77,12 +77,12 @@ func (c *HsmsConnection) sendLinktestReq() {
 	message := ast.NewHSMSMessageLinktestReq(c.hp.encodeSystemID(systemID))
 	c.hp.logControlMessage("TX", message)
 	if err := c.connection.Send(message.ToBytes()); err != nil {
-		c.hp.logger.Println("send linktest.req error:", err)
+		c.hp.logger.Error("send linktest.req failed", "error", err)
 		return
 	}
 
 	if _, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout()); err != nil {
-		c.hp.logger.Println("timeout waiting linktest.rsp:", err)
+		c.hp.logger.Warn("timeout waiting linktest.rsp", "error", err)
 	}
 }
 
@@ -90,7 +90,7 @@ func (c *HsmsConnection) sendDeselectRsp(message ast.HSMSMessage, status Control
 	response := ast.NewHSMSMessageDeselectRsp(message, byte(status))
 	c.hp.logControlMessage("TX", response)
 	if err := c.connection.Send(response.ToBytes()); err != nil {
-		c.hp.logger.Println("send deselect.rsp error:", err)
+		c.hp.logger.Error("send deselect.rsp failed", "error", err)
 	}
 }
 
@@ -98,7 +98,7 @@ func (c *HsmsConnection) sendSelectRsp(message ast.HSMSMessage, status ControlSt
 	response := ast.NewHSMSMessageSelectRsp(message, byte(status))
 	c.hp.logControlMessage("TX", response)
 	if err := c.connection.Send(response.ToBytes()); err != nil {
-		c.hp.logger.Println("send select.rsp error:", err)
+		c.hp.logger.Error("send select.rsp failed", "error", err)
 	}
 }
 
@@ -106,7 +106,7 @@ func (c *HsmsConnection) sendLinkTestRsp(message ast.HSMSMessage) {
 	response := ast.NewHSMSMessageLinktestRsp(message)
 	c.hp.logControlMessage("TX", response)
 	if err := c.connection.Send(response.ToBytes()); err != nil {
-		c.hp.logger.Println("send linktest.rsp error:", err)
+		c.hp.logger.Error("send linktest.rsp failed", "error", err)
 	}
 }
 
@@ -114,7 +114,7 @@ func (c *HsmsConnection) sendReject(message ast.HSMSMessage, reason RejectReason
 	reject := ast.NewHSMSMessageRejectReqFromMsg(message, byte(reason))
 	c.hp.logControlMessage("TX", reject)
 	if err := c.connection.Send(reject.ToBytes()); err != nil {
-		c.hp.logger.Println("send reject.req error:", err)
+		c.hp.logger.Error("send reject.req failed", "error", err)
 	}
 }
 
@@ -126,13 +126,13 @@ func (c *HsmsConnection) sendSelectReq() error {
 	request := ast.NewHSMSMessageSelectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID))
 	c.hp.logControlMessage("TX", request)
 	if err := c.connection.Send(request.ToBytes()); err != nil {
-		c.hp.logger.Println("send select.req error:", err)
+		c.hp.logger.Error("send select.req failed", "error", err)
 		return err
 	}
 
 	resp, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout())
 	if err != nil {
-		c.hp.logger.Println("timeout waiting select.rsp:", err)
+		c.hp.logger.Warn("timeout waiting select.rsp", "error", err)
 		return err
 	}
 
@@ -159,13 +159,13 @@ func (c *HsmsConnection) sendDeselectReq() error {
 	request := ast.NewHSMSMessageDeselectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID))
 	c.hp.logControlMessage("TX", request)
 	if err := c.connection.Send(request.ToBytes()); err != nil {
-		c.hp.logger.Println("send deselect.req error:", err)
+		c.hp.logger.Error("send deselect.req failed", "error", err)
 		return err
 	}
 
 	resp, err := queue.Get(c.hp.timeouts.T6ControlTransTimeout())
 	if err != nil {
-		c.hp.logger.Println("timeout waiting deselect.rsp:", err)
+		c.hp.logger.Warn("timeout waiting deselect.rsp", "error", err)
 		return err
 	}
 

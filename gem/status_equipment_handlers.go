@@ -3,8 +3,8 @@ package gem
 import (
 	"errors"
 	"fmt"
-	"log"
 
+	"github.com/younglifestyle/secs4go/common"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 )
 
@@ -55,7 +55,7 @@ func (g *GemHandler) RegisterEquipmentConstant(constant *EquipmentConstant) erro
 func (g *GemHandler) onS1F3(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	requests, err := parseIDRequestList(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S1F3:", err)
+		g.logger.Error("failed to parse S1F3", "error", err)
 		return g.buildS1F4(nil), nil
 	}
 
@@ -66,7 +66,7 @@ func (g *GemHandler) onS1F3(msg *ast.DataMessage) (*ast.DataMessage, error) {
 func (g *GemHandler) onS1F11(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	requests, err := parseIDRequestList(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S1F11:", err)
+		g.logger.Error("failed to parse S1F11", "error", err)
 		return g.buildS1F12(nil), nil
 	}
 
@@ -77,7 +77,7 @@ func (g *GemHandler) onS1F11(msg *ast.DataMessage) (*ast.DataMessage, error) {
 func (g *GemHandler) onS2F13(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	requests, err := parseIDRequestList(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S2F13:", err)
+		g.logger.Error("failed to parse S2F13", "error", err)
 		return g.buildS2F14(nil), nil
 	}
 
@@ -88,7 +88,7 @@ func (g *GemHandler) onS2F13(msg *ast.DataMessage) (*ast.DataMessage, error) {
 func (g *GemHandler) onS2F15(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	updates, err := parseEquipmentConstantUpdateList(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S2F15:", err)
+		g.logger.Error("failed to parse S2F15", "error", err)
 		return g.buildS2F16(ECACKInvalidData), nil
 	}
 
@@ -99,7 +99,7 @@ func (g *GemHandler) onS2F15(msg *ast.DataMessage) (*ast.DataMessage, error) {
 func (g *GemHandler) onS2F29(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	requests, err := parseIDRequestList(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S2F29:", err)
+		g.logger.Error("failed to parse S2F29", "error", err)
 		return g.buildS2F30(nil), nil
 	}
 
@@ -166,11 +166,11 @@ func (g *GemHandler) resolveStatusInfo(requests []idRequest) []ast.ItemNode {
 	return entries
 }
 
-func safeStatusValue(variable *StatusVariable, logger *log.Logger) ast.ItemNode {
+func safeStatusValue(variable *StatusVariable, logger common.Logger) ast.ItemNode {
 	value, err := variable.Value()
 	if err != nil || value == nil {
 		if err != nil {
-			logger.Printf("status variable %v value error: %v", variable.ID(), err)
+			logger.Error("status variable value error", "svid", variable.ID(), "error", err)
 		}
 		return ast.NewEmptyItemNode()
 	}
@@ -243,11 +243,11 @@ func (g *GemHandler) resolveEquipmentConstantInfo(requests []idRequest) []ast.It
 	return entries
 }
 
-func safeEquipmentConstantValue(constant *EquipmentConstant, logger *log.Logger) ast.ItemNode {
+func safeEquipmentConstantValue(constant *EquipmentConstant, logger common.Logger) ast.ItemNode {
 	value, err := constant.Value()
 	if err != nil || value == nil {
 		if err != nil {
-			logger.Printf("equipment constant %v value error: %v", constant.ID(), err)
+			logger.Error("equipment constant value error", "ecid", constant.ID(), "error", err)
 		}
 		return ast.NewEmptyItemNode()
 	}
@@ -396,7 +396,7 @@ func (g *GemHandler) applyEquipmentConstantUpdates(updates []equipmentConstantUp
 	for _, upd := range updates {
 		constant := g.equipmentConstants[upd.id.key]
 		if err := constant.ApplyValue(upd.value); err != nil {
-			g.logger.Printf("equipment constant %v update rejected: %v", constant.ID(), err)
+			g.logger.Warn("equipment constant update rejected", "ecid", constant.ID(), "error", err)
 			return ECACKValidationError
 		}
 	}

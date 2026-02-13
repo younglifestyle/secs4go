@@ -34,6 +34,5 @@ func (p *HsmsProtocol) resetReconnectionState() {
 func (p *HsmsProtocol) onDisconnection() {
 	p.lastDisconnectTime = time.Now()
 	// Don't reset reconnectAttempts here - let it accumulate for backoff
-	p.logger.Printf("disconnected at %v, reconnect attempts so far: %d",
-		p.lastDisconnectTime.Format(time.RFC3339), p.reconnectAttempts)
+	p.logger.Info("disconnected", "time", p.lastDisconnectTime.Format(time.RFC3339), "reconnectAttempts", p.reconnectAttempts)
 }

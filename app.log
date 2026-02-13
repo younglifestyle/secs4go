@@ -1,0 +1,8 @@
+{"level":"info","ts":"2026-02-13T10:09:51.071+0800","msg":"Initializing GEM handler with logging..."}
+{"level":"info","ts":"2026-02-13T10:09:51.185+0800","msg":"Waiting for logs..."}
+{"level":"info","ts":"2026-02-13T10:09:51.397+0800","msg":"state transition","state":"CONNECTED_NOT_SELECTED"}
+{"level":"info","ts":"2026-02-13T10:09:51.397+0800","msg":"Sent dummy SelectReq"}
+{"level":"warn","ts":"2026-02-13T10:09:51.400+0800","msg":"received message while not selected"}
+{"level":"error","ts":"2026-02-13T10:09:51.400+0800","msg":"clear read deadline failed","error":"set tcp 127.0.0.1:5000: use of closed network connection"}
+{"level":"error","ts":"2026-02-13T10:09:51.401+0800","msg":"receive error","error":"read tcp 127.0.0.1:5000->127.0.0.1:54483: wsarecv: An existing connection was forcibly closed by the remote host."}
+{"level":"info","ts":"2026-02-13T10:09:51.402+0800","msg":"state transition","state":"NOT_CONNECTED"}

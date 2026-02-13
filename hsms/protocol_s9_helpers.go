@@ -14,7 +14,7 @@ func (p *HsmsProtocol) sendS9ErrorForUnrecognized(message *ast.DataMessage) {
 	// For now, we consider streams 1-7, 9, 10, 12-17 as potentially valid
 	// Stream 9 is for errors, so we won't send S9 about S9
 	if stream == 9 {
-		p.logger.Printf("received Stream 9 message S9F%d - not sending S9 response", function)
+		p.logger.Debug("received Stream 9 message, not sending S9 response", "function", function)
 		return
 	}
 
@@ -26,11 +26,11 @@ func (p *HsmsProtocol) sendS9ErrorForUnrecognized(message *ast.DataMessage) {
 	if !isKnownStream {
 		// Unknown stream - send S9F3
 		s9Message = BuildS9F3(byte(stream), systemBytes)
-		p.logger.Printf("unrecognized stream S%dF%d - sending S9F3", stream, function)
+		p.logger.Info("unrecognized stream, sending S9F3", "stream", stream, "function", function)
 	} else {
 		// Known stream but unknown function - send S9F5
 		s9Message = BuildS9F5(byte(function), systemBytes)
-		p.logger.Printf("unrecognized function S%dF%d - sending S9F5", stream, function)
+		p.logger.Info("unrecognized function, sending S9F5", "stream", stream, "function", function)
 	}
 
 	if s9Message != nil {
@@ -41,7 +41,7 @@ func (p *HsmsProtocol) sendS9ErrorForUnrecognized(message *ast.DataMessage) {
 		p.logDataMessage("OUT", s9Message)
 
 		if err := p.hsmsConnection.Send(s9Message.ToBytes()); err != nil {
-			p.logger.Printf("failed to send S9 error message: %v", err)
+			p.logger.Error("failed to send S9 error message", "error", err)
 		}
 	}
 }
@@ -85,11 +85,11 @@ func (p *HsmsProtocol) sendS9F7IllegalData(systemBytes []byte) {
 	s9Message = s9Message.SetSessionIDAndSystemBytes(p.sessionID, systemBytes)
 	s9Message = s9Message.SetWaitBit(false)
 
-	p.logger.Printf("illegal data format - sending S9F7")
+	p.logger.Info("illegal data format, sending S9F7")
 	p.logDataMessage("OUT", s9Message)
 
 	if err := p.hsmsConnection.Send(s9Message.ToBytes()); err != nil {
-		p.logger.Printf("failed to send S9F7: %v", err)
+		p.logger.Error("failed to send S9F7", "error", err)
 	}
 }
 
@@ -99,11 +99,11 @@ func (p *HsmsProtocol) sendS9F11DataTooLong(systemBytes []byte) {
 	s9Message = s9Message.SetSessionIDAndSystemBytes(p.sessionID, systemBytes)
 	s9Message = s9Message.SetWaitBit(false)
 
-	p.logger.Printf("message too long - sending S9F11")
+	p.logger.Info("message too long, sending S9F11")
 	p.logDataMessage("OUT", s9Message)
 
 	if err := p.hsmsConnection.Send(s9Message.ToBytes()); err != nil {
-		p.logger.Printf("failed to send S9F11: %v", err)
+		p.logger.Error("failed to send S9F11", "error", err)
 	}
 }
 
@@ -152,11 +152,11 @@ func (p *HsmsProtocol) sendS9F9TransactionTimeout(originalMsg *ast.DataMessage) 
 		s9Message = s9Message.SetSessionIDAndSystemBytes(p.sessionID, nextSys)
 		s9Message = s9Message.SetWaitBit(false)
 
-		p.logger.Printf("T3 timeout for S%dF%d - sending S9F9", originalMsg.StreamCode(), originalMsg.FunctionCode())
+		p.logger.Info("T3 timeout, sending S9F9", "stream", originalMsg.StreamCode(), "function", originalMsg.FunctionCode())
 		p.logDataMessage("OUT", s9Message)
 
 		if err := p.hsmsConnection.Send(s9Message.ToBytes()); err != nil {
-			p.logger.Printf("failed to send S9F9: %v", err)
+			p.logger.Error("failed to send S9F9", "error", err)
 		}
 	}
 }

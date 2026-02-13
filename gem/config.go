@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/younglifestyle/secs4go/hsms"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Options describes configurable parameters when creating a GEM handler.
@@ -19,6 +20,7 @@ type Options struct {
 	InitialControlState        ControlState
 	InitialOnlineMode          OnlineControlMode
 	Logging                    LoggingOptions
+	Logger                     Logger // Optional: custom structured logger. Defaults to NopLogger().
 }
 
 // LoggingOptions configures HSMS/GEM message logging.
@@ -28,6 +30,13 @@ type LoggingOptions struct {
 	IncludeControlMessages     bool
 	ExcludeControlMessageTypes []string
 	Writer                     io.Writer
+
+	// Log rotation options
+	LogFile    string // Path to log file. If empty, Writer or default is used.
+	MaxSize    int    // Max size in megabytes before rotation. Default 100MB.
+	MaxBackups int    // Max number of old log files to retain.
+	MaxAge     int    // Max number of days to retain old log files.
+	Compress   bool   // Compress old log files (gzip).
 }
 
 func (o *LoggingOptions) applyDefaults() {
@@ -40,12 +49,25 @@ func (o *LoggingOptions) applyDefaults() {
 }
 
 func (o LoggingOptions) toConfig(defaultWriter io.Writer) hsms.LoggingConfig {
+	writer := o.Writer
+	if o.LogFile != "" {
+		writer = &lumberjack.Logger{
+			Filename:   o.LogFile,
+			MaxSize:    o.MaxSize, // megabytes
+			MaxBackups: o.MaxBackups,
+			MaxAge:     o.MaxAge, // days
+			Compress:   o.Compress,
+		}
+	} else if writer == nil {
+		writer = defaultWriter
+	}
+
 	cfg := hsms.LoggingConfig{
 		Enabled:                     o.Enabled,
 		Mode:                        o.Mode,
 		IncludeControlMessages:      o.IncludeControlMessages,
 		ExcludedControlMessageTypes: make(map[string]struct{}),
-		Writer:                      o.Writer,
+		Writer:                      writer,
 	}
 	for _, msgType := range o.ExcludeControlMessageTypes {
 		typeKey := strings.ToLower(strings.TrimSpace(msgType))

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/rand"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +16,7 @@ import (
 	"github.com/looplab/fsm"
 	link "github.com/younglifestyle/secs4go"
 	"github.com/younglifestyle/secs4go/codec"
+	"github.com/younglifestyle/secs4go/common"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/parser/hsms"
 	"github.com/younglifestyle/secs4go/utils"
@@ -61,6 +62,7 @@ func streamFunctionKey(stream, function int) string {
 var (
 	ErrT3Timeout = errors.New("T3 timeout")
 )
+
 type HsmsProtocol struct {
 	remoteAddress string
 	remotePort    int
@@ -71,7 +73,7 @@ type HsmsProtocol struct {
 	enabled   *atomic.Bool
 	connected *atomic.Bool
 
-	logger *log.Logger
+	logger common.Logger
 
 	systemCounter *atomic.Uint32
 
@@ -108,7 +110,7 @@ type HsmsProtocol struct {
 	// Reconnection state
 	reconnectAttempts  int
 	lastDisconnectTime time.Time
-	
+
 	// Callbacks
 	// OnS9Error is called when an S9 error message is sent or received
 	OnS9Error func(errorInfo *S9ErrorInfo)
@@ -116,7 +118,7 @@ type HsmsProtocol struct {
 
 // NewHsmsProtocol creates a new HsmsProtocol instance.
 func NewHsmsProtocol(address string, port int, active bool, sessionID int, name string) *HsmsProtocol {
-	logger := log.New(log.Writer(), "hsms_protocol: ", log.LstdFlags)
+	logger := common.NopLogger()
 
 	h := &HsmsProtocol{
 		remoteAddress:        address,
@@ -134,7 +136,7 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 		disconnectFlg:        make(chan struct{}, 1),
 		connectThreadRunning: atomic.NewBool(false),
 	}
-	h.logCfg.Writer = logger.Writer()
+	h.logCfg.Writer = os.Stderr
 	h.logCfg.Mode = LoggingModeSML
 
 	h.connectionState = NewConnectionStateMachine(fsm.Callbacks{
@@ -210,14 +212,14 @@ func (p *HsmsProtocol) startT7Timer() {
 		p.t7Timer.Stop()
 	}
 	p.t7Timer = time.AfterFunc(duration, func() {
-		p.logger.Printf("T7 timeout after %s without SELECT", duration)
+		p.logger.Warn("T7 timeout", "duration", duration)
 		p.connected.Store(false)
 		p.stopLinktestTimer()
 		if err := p.connectionState.TimeoutT7(); err != nil {
-			p.logger.Println("timeoutT7 transition error:", err)
+			p.logger.Error("timeoutT7 transition error", "error", err)
 		}
 		if err := p.hsmsConnection.Close(); err != nil {
-			p.logger.Println("close session after T7 timeout error:", err)
+			p.logger.Error("close session after T7 timeout", "error", err)
 		}
 	})
 	p.t7TimerMu.Unlock()
@@ -235,17 +237,17 @@ func (p *HsmsProtocol) stopT7Timer() {
 // onStateSelect is triggered when the HSMS connection enters SELECTED state.
 
 func (p *HsmsProtocol) onStateConnectedNotSelected(ctx context.Context, _ *fsm.Event) {
-	p.logger.Println("state: CONNECTED_NOT_SELECTED")
+	p.logger.Info("state transition", "state", "CONNECTED_NOT_SELECTED")
 	p.startT7Timer()
 }
 
 func (p *HsmsProtocol) onStateSelect(ctx context.Context, _ *fsm.Event) {
-	p.logger.Println("state: CONNECTED_SELECTED")
+	p.logger.Info("state transition", "state", "CONNECTED_SELECTED")
 	p.stopT7Timer()
 }
 
 func (p *HsmsProtocol) onStateDisconnect(ctx context.Context, _ *fsm.Event) {
-	p.logger.Println("state: NOT_CONNECTED")
+	p.logger.Info("state transition", "state", "NOT_CONNECTED")
 	p.connected.Store(false)
 	p.stopLinktestTimer()
 	p.stopT7Timer()
@@ -261,7 +263,7 @@ func (p *HsmsProtocol) onStateConnect(ctx context.Context, _ *fsm.Event) {
 	go func() {
 		if p.active {
 			if err := p.hsmsConnection.sendSelectReq(); err != nil {
-				p.logger.Println("send select.req error:", err)
+				p.logger.Error("send select.req failed", "error", err)
 				return
 			}
 		}
@@ -312,7 +314,7 @@ func (p *HsmsProtocol) removeQueue(systemID uint32) {
 func (p *HsmsProtocol) OnConnectionEstablished() {
 	p.connected.Store(true)
 	if err := p.connectionState.Connect(); err != nil {
-		p.logger.Println("change state to CONNECTED error:", err)
+		p.logger.Error("change state to CONNECTED failed", "error", err)
 	}
 }
 
@@ -339,13 +341,13 @@ func (p *HsmsProtocol) Disable() {
 		if sess := p.hsmsConnection.Session(); sess != nil && !sess.IsClosed() {
 			if p.connectionState.CurrentState() == StateConnectedSelected {
 				if err := p.hsmsConnection.sendDeselectReq(); err != nil {
-					p.logger.Println("deselect error:", err)
+					p.logger.Error("deselect failed", "error", err)
 				}
 			}
 			systemID := p.getNextSystemCounter()
 			sep := ast.NewHSMSMessageSeparateReq(uint16(p.sessionID), p.encodeSystemID(systemID))
 			if err := p.hsmsConnection.Send(sep.ToBytes()); err != nil {
-				p.logger.Println("send separate.req error:", err)
+				p.logger.Error("send separate.req failed", "error", err)
 			}
 			// allow a brief moment for remote to process before closing
 			time.Sleep(200 * time.Millisecond)
@@ -355,7 +357,7 @@ func (p *HsmsProtocol) Disable() {
 		default:
 		}
 		if err := p.hsmsConnection.Close(); err != nil {
-			p.logger.Println("close session error:", err)
+			p.logger.Error("close session failed", "error", err)
 		}
 		p.waitForConnectionClosure(2 * time.Second)
 	} else {
@@ -378,7 +380,7 @@ func (p *HsmsProtocol) waitForConnectionClosure(timeout time.Duration) {
 	select {
 	case <-done:
 	case <-time.After(timeout):
-		p.logger.Println("timeout waiting for connection teardown")
+		p.logger.Warn("timeout waiting for connection teardown")
 	}
 }
 
@@ -390,34 +392,34 @@ func (p *HsmsProtocol) startConnectThread() {
 				if !p.enabled.Load() {
 					return
 				}
-				p.logger.Println("connect error:", err)
-				
+				p.logger.Error("connect failed", "error", err)
+
 				// Check if auto-reconnect is enabled
 				if !p.timeouts.AutoReconnect() {
-					p.logger.Println("auto-reconnect disabled, stopping connection attempts")
+					p.logger.Info("auto-reconnect disabled, stopping connection attempts")
 					return
 				}
-				
+
 				// Increment reconnect attempts
 				p.reconnectAttempts++
-				
+
 				// Check max attempts
 				maxAttempts := p.timeouts.MaxReconnectAttempts()
 				if maxAttempts > 0 && p.reconnectAttempts > maxAttempts {
-					p.logger.Printf("max reconnect attempts (%d) reached, stopping", maxAttempts)
+					p.logger.Warn("max reconnect attempts reached, stopping", "maxAttempts", maxAttempts)
 					p.reconnectAttempts = 0
 					return
 				}
-				
+
 				// Calculate exponential backoff delay
 				delay := p.calculateBackoffDelay()
-				p.logger.Printf("reconnect attempt %d, waiting %v", p.reconnectAttempts, delay)
+				p.logger.Info("reconnecting", "attempt", p.reconnectAttempts, "delay", delay)
 				time.Sleep(delay)
 				continue
 			}
 			// Connection successful, reset reconnect counter
 			p.reconnectAttempts = 0
-			
+
 			if !p.enabled.Load() {
 				return
 			}
@@ -429,7 +431,7 @@ func (p *HsmsProtocol) startConnectThread() {
 			if !p.enabled.Load() {
 				return
 			}
-			p.logger.Println("listen error:", err)
+			p.logger.Error("listen failed", "error", err)
 			time.Sleep(time.Second)
 			continue
 		}
@@ -489,7 +491,7 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 	case hsms.SelectReqStr:
 		ctrl, ok := message.(*ast.ControlMessage)
 		if !ok {
-			p.logger.Println("received malformed select.req")
+			p.logger.Warn("received malformed select.req")
 			p.hsmsConnection.sendReject(message, RejectReasonBusyOrAlreadyActive)
 			return
 		}
@@ -500,28 +502,27 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 			// 0xFFFF0000 是 HSMS 标准规定的“系统消息会话 ID”，只用于 Select/Linktest 等控制消息。
 			acceptMismatch := false
 			if receivedSession == 0xFFFF {
-				p.logger.Printf(
-					"select.req session mismatch: remote used wildcard 0xFFFF, accepting expected %d",
-					expectedSession,
+				p.logger.Info(
+					"select.req session mismatch: remote used wildcard",
+					"remote", receivedSession, "expected", expectedSession,
 				)
 				acceptMismatch = true
 			} else if expectedSession == 0 || expectedSession == 0xFFFF {
-				p.logger.Printf(
-					"select.req session mismatch: adopting remote session %d in place of expected %d",
-					receivedSession,
-					expectedSession,
+				p.logger.Info(
+					"select.req session mismatch: adopting remote session",
+					"remote", receivedSession, "expected", expectedSession,
 				)
 				p.sessionID = int(receivedSession)
 				p.hsmsConnection.sessionID = int(receivedSession)
 				acceptMismatch = true
 			}
 			if !acceptMismatch {
-				p.logger.Printf("select.req session mismatch: got %d expected %d", receivedSession, expectedSession)
+				p.logger.Warn("select.req session mismatch", "remote", receivedSession, "expected", expectedSession)
 				p.hsmsConnection.sendSelectRsp(message, ControlStatusDenied)
 				_ = p.hsmsConnection.Close()
 				p.connected.Store(false)
 				if err := p.connectionState.Disconnect(); err != nil {
-					p.logger.Println("change state to NOT-CONNECTED error:", err)
+					p.logger.Error("change state to NOT-CONNECTED failed", "error", err)
 				}
 				return
 			}
@@ -533,7 +534,7 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 		p.hsmsConnection.sendSelectRsp(message, ControlStatusAccepted)
 		if err := p.connectionState.Select(); err != nil {
-			p.logger.Println("change state to SELECTED error:", err)
+			p.logger.Error("change state to SELECTED failed", "error", err)
 		}
 
 	case hsms.SelectRspStr:
@@ -542,20 +543,20 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 		ctrl, ok := message.(*ast.ControlMessage)
 		if !ok {
-			p.logger.Println("received malformed select.rsp")
+			p.logger.Warn("received malformed select.rsp")
 			return
 		}
 		if ControlStatus(ctrl.Status()) != ControlStatusAccepted {
-			p.logger.Printf("select.rsp returned status %d", ctrl.Status())
+			p.logger.Warn("select.rsp rejected", "status", ctrl.Status())
 			p.connected.Store(false)
 			if err := p.connectionState.Disconnect(); err != nil {
-				p.logger.Println("change state to NOT-CONNECTED error:", err)
+				p.logger.Error("change state to NOT-CONNECTED failed", "error", err)
 			}
 			_ = p.hsmsConnection.Close()
 			return
 		}
 		if err := p.connectionState.Select(); err != nil {
-			p.logger.Println("change state to SELECTED error:", err)
+			p.logger.Error("change state to SELECTED failed", "error", err)
 		}
 
 	case hsms.DeselectReqStr:
@@ -565,12 +566,12 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 		p.hsmsConnection.sendDeselectRsp(message, ControlStatusAccepted)
 		if err := p.connectionState.Deselect(); err != nil {
-			p.logger.Println("change state to NOT-SELECTED error:", err)
+			p.logger.Error("change state to NOT-SELECTED failed", "error", err)
 		}
 
 	case hsms.DeselectRspStr:
 		if err := p.connectionState.Deselect(); err != nil {
-			p.logger.Println("change state to NOT-SELECTED error:", err)
+			p.logger.Error("change state to NOT-SELECTED failed", "error", err)
 		}
 		if queue, ok := p.fetchQueue(systemID); ok {
 			queue.Put(message)
@@ -584,12 +585,12 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		p.hsmsConnection.sendLinkTestRsp(message)
 
 	case hsms.SeparateReqStr:
-		p.logger.Println("received separate.req; closing session")
+		p.logger.Info("received separate.req, closing session")
 		p.onDisconnection()
 		p.stopLinktestTimer()
 		p.connected.Store(false)
 		if err := p.connectionState.Disconnect(); err != nil {
-			p.logger.Println("change state to NOT-CONNECTED error:", err)
+			p.logger.Error("change state to NOT-CONNECTED failed", "error", err)
 		}
 		_ = p.hsmsConnection.Close()
 		p.hsmsConnection.SetSession(nil)
@@ -611,7 +612,7 @@ func (p *HsmsProtocol) lookupHandler(stream, function int) DataMessageHandler {
 func (p *HsmsProtocol) invokeHandler(handler DataMessageHandler, msg *ast.DataMessage) {
 	response, err := handler(msg)
 	if err != nil {
-		p.logger.Printf("handler error for S%02dF%02d: %v", msg.StreamCode(), msg.FunctionCode(), err)
+		p.logger.Error("handler error", "stream", msg.StreamCode(), "function", msg.FunctionCode(), "error", err)
 		return
 	}
 
@@ -627,7 +628,7 @@ func (p *HsmsProtocol) invokeHandler(handler DataMessageHandler, msg *ast.DataMe
 	p.logDataMessage("OUT", response)
 
 	if err := p.hsmsConnection.Send(response.ToBytes()); err != nil {
-		p.logger.Printf("send response S%02dF%02d failed: %v", response.StreamCode(), response.FunctionCode(), err)
+		p.logger.Error("send response failed", "stream", response.StreamCode(), "function", response.FunctionCode(), "error", err)
 	}
 }
 
@@ -814,7 +815,7 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 		if dc, ok := connection.Codec().(link.DeadlineCodec); ok {
 			deadlineCodec = dc
 		} else {
-			p.logger.Println("T8 timeout configured but codec does not support deadlines; disabling T8 enforcement")
+			p.logger.Warn("T8 timeout configured but codec does not support deadlines; disabling T8 enforcement")
 			t8Duration = 0
 		}
 	}
@@ -827,7 +828,7 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 	for p.enabled.Load() {
 		if deadlineCodec != nil {
 			if err := deadlineCodec.SetReadDeadline(time.Now().Add(t8Duration)); err != nil {
-				p.logger.Println("set read deadline error:", err)
+				p.logger.Error("set read deadline failed", "error", err)
 			}
 		}
 
@@ -835,7 +836,7 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 
 		if deadlineCodec != nil {
 			if clrErr := deadlineCodec.SetReadDeadline(time.Time{}); clrErr != nil {
-				p.logger.Println("clear read deadline error:", clrErr)
+				p.logger.Error("clear read deadline failed", "error", clrErr)
 			}
 		}
 
@@ -846,17 +847,17 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 			logHandled := false
 			if t8Duration > 0 {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					p.logger.Printf("receive error: T8 timeout after %s", t8Duration)
+					p.logger.Warn("receive error: T8 timeout", "duration", t8Duration)
 					logHandled = true
 				}
 			}
 			if !logHandled {
-				p.logger.Println("receive error:", err)
+				p.logger.Error("receive error", "error", err)
 			}
 
 			if p.connectionState.CurrentState() != StateNotConnected {
 				if err := p.connectionState.Disconnect(); err != nil {
-					p.logger.Println("change state to NOT-CONNECTED error:", err)
+					p.logger.Error("change state to NOT-CONNECTED failed", "error", err)
 				}
 			}
 			break
@@ -870,14 +871,14 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 
 		dataMessage, ok := message.(*ast.DataMessage)
 		if !ok {
-			p.logger.Printf("unexpected HSMS message type %T", message)
+			p.logger.Warn("unexpected HSMS message type", "type", fmt.Sprintf("%T", message))
 			continue
 		}
 
 		p.logDataMessage("IN", dataMessage)
 
 		if p.connectionState.CurrentState() != StateConnectedSelected {
-			p.logger.Println("received message while not selected")
+			p.logger.Warn("received message while not selected")
 			continue
 		}
 
@@ -1006,6 +1007,15 @@ func (p *HsmsProtocol) RegisterDefaultHandler(handler DataMessageHandler) {
 	p.handlerMu.Unlock()
 }
 
+// SetLogger replaces the internal logger used for protocol events.
+// If logger is nil, a silent NopLogger is used.
+func (p *HsmsProtocol) SetLogger(logger common.Logger) {
+	if logger == nil {
+		logger = common.NopLogger()
+	}
+	p.logger = logger
+}
+
 // ConfigureLogging enables or updates message logging behaviour.
 func (p *HsmsProtocol) ConfigureLogging(cfg LoggingConfig) {
 	p.logMu.Lock()
@@ -1016,7 +1026,7 @@ func (p *HsmsProtocol) ConfigureLogging(cfg LoggingConfig) {
 			cfg.Mode = LoggingModeSML
 		}
 		if cfg.Writer == nil {
-			cfg.Writer = p.logger.Writer()
+			cfg.Writer = os.Stderr
 		}
 	} else {
 		cfg.Writer = nil
@@ -1094,6 +1104,6 @@ func (p *HsmsProtocol) triggerS9ErrorCallback(msg *ast.DataMessage) {
 		OriginalMessage: nil, // We don't have original message here easily for RX
 		SystemBytes:     msg.SystemBytes(),
 	}
-	
+
 	p.OnS9Error(errorInfo)
 }

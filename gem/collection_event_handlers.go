@@ -3,8 +3,8 @@ package gem
 import (
 	"errors"
 	"fmt"
-	"log"
 
+	"github.com/younglifestyle/secs4go/common"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 )
 
@@ -83,7 +83,7 @@ func (g *GemHandler) TriggerCollectionEvent(ids ...interface{}) error {
 func (g *GemHandler) sendCollectionEvent(key string) {
 	reports, dataID, ceNode, err := g.buildCollectionEventPayload(key)
 	if err != nil {
-		g.logger.Printf("collection event build failed: %v", err)
+		g.logger.Error("collection event build failed", "error", err)
 		return
 	}
 	if reports == nil {
@@ -92,7 +92,7 @@ func (g *GemHandler) sendCollectionEvent(key string) {
 
 	msg := g.buildS6F11(dataID, ceNode, reports)
 	if sendErr := g.protocol.SendDataMessage(msg); sendErr != nil {
-		g.logger.Printf("failed to send S6F11: %v", sendErr)
+		g.logger.Error("failed to send S6F11", "error", sendErr)
 	}
 }
 
@@ -165,11 +165,11 @@ func (g *GemHandler) resolveVIDValue(key string) ast.ItemNode {
 	return nil
 }
 
-func safeDataVariableValue(variable *DataVariable, logger *log.Logger) ast.ItemNode {
+func safeDataVariableValue(variable *DataVariable, logger common.Logger) ast.ItemNode {
 	value, err := variable.Value()
 	if err != nil || value == nil {
 		if err != nil {
-			logger.Printf("data variable %v value error: %v", variable.ID(), err)
+			logger.Error("data variable value error", "dvid", variable.ID(), "error", err)
 		}
 		return ast.NewEmptyItemNode()
 	}
@@ -179,7 +179,7 @@ func safeDataVariableValue(variable *DataVariable, logger *log.Logger) ast.ItemN
 func (g *GemHandler) onS2F33(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	reports, err := parseReportDefinitionList(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S2F33:", err)
+		g.logger.Error("failed to parse S2F33", "error", err)
 		return g.buildS2F34(DRACKInvalidFormat), nil
 	}
 	ack := g.handleReportDefinitions(reports)
@@ -254,7 +254,7 @@ func (g *GemHandler) vidExists(key string) bool {
 func (g *GemHandler) onS2F35(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	links, err := parseEventReportLinkList(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S2F35:", err)
+		g.logger.Error("failed to parse S2F35", "error", err)
 		return g.buildS2F36(LRACKInvalidFormat), nil
 	}
 
@@ -309,7 +309,7 @@ func (g *GemHandler) handleEventReportLinks(links []eventReportLinkMessage) LRAC
 func (g *GemHandler) onS2F37(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	command, err := parseEventEnableMessage(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S2F37:", err)
+		g.logger.Error("failed to parse S2F37", "error", err)
 		return g.buildS2F38(ERACKCEIDUnknown), nil
 	}
 
@@ -341,13 +341,13 @@ func (g *GemHandler) setCollectionEventState(enable bool, ceids []idInfo) ERACKC
 func (g *GemHandler) onS6F15(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	req, err := parseEventReportRequest(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S6F15:", err)
+		g.logger.Error("failed to parse S6F15", "error", err)
 		return g.buildS6F16(1, nil, nil), nil
 	}
 
 	reports, dataID, ceNode, buildErr := g.buildCollectionEventPayload(req.key)
 	if buildErr != nil {
-		g.logger.Println("failed to build S6F16 payload:", buildErr)
+		g.logger.Error("failed to build S6F16 payload", "error", buildErr)
 		return g.buildS6F16(1, req.node, nil), nil
 	}
 
@@ -361,7 +361,7 @@ func (g *GemHandler) onS6F15(msg *ast.DataMessage) (*ast.DataMessage, error) {
 func (g *GemHandler) onS6F11(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	report, err := parseEventReportMessage(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S6F11:", err)
+		g.logger.Error("failed to parse S6F11", "error", err)
 		return g.buildS6F12(1), nil
 	}
 

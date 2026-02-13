@@ -2,7 +2,7 @@ package gem
 
 import (
 	"errors"
-	"log"
+	"fmt"
 	"sync"
 	"time"
 
@@ -90,7 +90,7 @@ type GemHandler struct {
 
 	clockManager *ClockManager
 
-	logger *log.Logger
+	logger common.Logger
 
 	controlAttemptInProgress *atomic.Bool
 }
@@ -134,7 +134,7 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		eventLinks:               make(map[string]*collectionEventLink),
 		processStore:             newProcessProgramStore(),
 		clockManager:             NewClockManager(),
-		logger:                   log.New(log.Writer(), "gem_handler: ", log.LstdFlags),
+		logger:                   resolveLogger(opts.Logger),
 		controlAttemptInProgress: atomic.NewBool(false),
 	}
 
@@ -147,7 +147,8 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		})
 	}
 
-	handler.protocol.ConfigureLogging(opts.Logging.toConfig(handler.logger.Writer()))
+	handler.protocol.SetLogger(handler.logger)
+	handler.protocol.ConfigureLogging(opts.Logging.toConfig(nil))
 
 	handler.protocol.RegisterHandler(1, 1, handler.onS1F1)
 	handler.protocol.RegisterHandler(1, 13, handler.onS1F13)
@@ -471,7 +472,7 @@ func (g *GemHandler) initiateAttemptOnline() {
 		}
 
 		if g.State() != CommunicationStateCommunicating {
-			g.logger.Println("attempt online while not communicating")
+			g.logger.Warn("attempt online while not communicating")
 			_ = g.transitionControl(func(sm *ControlStateMachine) error {
 				return sm.AttemptOnlineFailHostOffline()
 			})
@@ -480,7 +481,7 @@ func (g *GemHandler) initiateAttemptOnline() {
 
 		resp, err := g.protocol.SendAndWait(g.buildS1F1())
 		if err != nil {
-			g.logger.Println("S1F1 request failed:", err)
+			g.logger.Error("S1F1 request failed", "error", err)
 			_ = g.transitionControl(func(sm *ControlStateMachine) error {
 				return sm.AttemptOnlineFailHostOffline()
 			})
@@ -488,9 +489,9 @@ func (g *GemHandler) initiateAttemptOnline() {
 		}
 		if resp == nil || resp.StreamCode() != 1 || resp.FunctionCode() != 2 {
 			if resp != nil {
-				g.logger.Printf("unexpected response to S1F1: S%02dF%02d", resp.StreamCode(), resp.FunctionCode())
+				g.logger.Warn("unexpected response to S1F1", "response", fmt.Sprintf("S%02dF%02d", resp.StreamCode(), resp.FunctionCode()))
 			} else {
-				g.logger.Println("unexpected nil response to S1F1")
+				g.logger.Warn("unexpected nil response to S1F1")
 			}
 			_ = g.transitionControl(func(sm *ControlStateMachine) error {
 				return sm.AttemptOnlineFailHostOffline()
@@ -521,17 +522,17 @@ func (g *GemHandler) initiateEstablishCommunication() {
 
 		resp, err := g.protocol.SendAndWait(g.buildS1F13Equipment())
 		if err != nil {
-			g.logger.Println("S1F13 request failed:", err)
+			g.logger.Error("S1F13 request failed", "error", err)
 			return
 		}
 		if resp == nil {
-			g.logger.Println("S1F13 returned nil response")
+			g.logger.Warn("S1F13 returned nil response")
 			return
 		}
 
 		ack := readCommAck(resp)
 		if ack != 0 {
-			g.logger.Printf("S1F13 COMMACK=%d", ack)
+			g.logger.Warn("S1F13 communication denied", "COMMACK", ack)
 			return
 		}
 
@@ -614,13 +615,13 @@ func (g *GemHandler) initiateHandshake() {
 
 		dataMsg, err := g.protocol.SendAndWait(g.buildS1F13())
 		if err != nil {
-			g.logger.Println("establish communication request failed:", err)
+			g.logger.Error("establish communication request failed", "error", err)
 			g.scheduleRetry()
 			return
 		}
 
 		if commack := readCommAck(dataMsg); commack != 0 {
-			g.logger.Printf("COMMACK=%d, establishing communication denied", commack)
+			g.logger.Warn("establishing communication denied", "COMMACK", commack)
 			g.scheduleRetry()
 			return
 		}
@@ -651,7 +652,7 @@ func (g *GemHandler) onWaitCRATimeout() {
 	if g.State() != CommunicationStateWaitCRA {
 		return
 	}
-	g.logger.Println("wait CRA timed out")
+	g.logger.Warn("wait CRA timed out")
 	g.scheduleRetry()
 }
 
@@ -694,7 +695,7 @@ func (g *GemHandler) onS1F14(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	if commack := readCommAck(msg); commack == 0 {
 		g.setCommunicating()
 	} else {
-		g.logger.Printf("received S1F14 with COMMACK=%d", commack)
+		g.logger.Warn("received S1F14 with non-zero COMMACK", "COMMACK", commack)
 		g.scheduleRetry()
 	}
 	return nil, nil
@@ -743,7 +744,7 @@ func (g *GemHandler) onS5F1(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	}
 
 	if event, err := parseAlarmMessage(msg); err != nil {
-		g.logger.Println("failed to parse S5F1:", err)
+		g.logger.Error("failed to parse S5F1", "error", err)
 	} else if g.events.AlarmReceived != nil {
 		g.events.AlarmReceived.Fire(map[string]interface{}{"alarm": event})
 	}
@@ -758,18 +759,18 @@ func (g *GemHandler) onS5F2(msg *ast.DataMessage) (*ast.DataMessage, error) {
 
 	item, err := msg.Get(0)
 	if err != nil {
-		g.logger.Println("failed to parse S5F2:", err)
+		g.logger.Error("failed to parse S5F2", "error", err)
 		return nil, err
 	}
 
 	ack, err := readSingleBinaryValue(item)
 	if err != nil {
-		g.logger.Println("failed to parse S5F2:", err)
+		g.logger.Error("failed to parse S5F2", "error", err)
 		return nil, err
 	}
 
 	if ack != 0 {
-		g.logger.Printf("alarm acknowledge returned code %d", ack)
+		g.logger.Warn("alarm acknowledge returned non-zero code", "ack", ack)
 	}
 
 	if g.events.AlarmAckReceived != nil {
@@ -783,7 +784,7 @@ func (g *GemHandler) onS2F41(msg *ast.DataMessage) (*ast.DataMessage, error) {
 	buildAck := func(res RemoteCommandResult) *ast.DataMessage {
 		ack, err := g.buildS2F42(res)
 		if err != nil {
-			g.logger.Println("build remote command ack error:", err)
+			g.logger.Error("build remote command ack error", "error", err)
 			fallback, _ := g.buildS2F42(RemoteCommandResult{HCACK: HCACKInvalidCommand})
 			return fallback
 		}
@@ -796,7 +797,7 @@ func (g *GemHandler) onS2F41(msg *ast.DataMessage) (*ast.DataMessage, error) {
 
 	req, err := parseRemoteCommand(msg)
 	if err != nil {
-		g.logger.Println("failed to parse S2F41:", err)
+		g.logger.Error("failed to parse S2F41", "error", err)
 		return buildAck(RemoteCommandResult{HCACK: HCACKInvalidCommand}), nil
 	}
 
@@ -811,7 +812,7 @@ func (g *GemHandler) onS2F41(msg *ast.DataMessage) (*ast.DataMessage, error) {
 
 	result, callErr := handler(req)
 	if callErr != nil {
-		g.logger.Println("remote command handler error:", callErr)
+		g.logger.Error("remote command handler error", "error", callErr)
 		if result.HCACK == HCACKAcknowledge {
 			result.HCACK = HCACKCannotPerformNow
 		}
@@ -949,4 +950,11 @@ func (g *GemHandler) getRemoteCommandHandler() RemoteCommandHandler {
 // Protocol returns the underlying HSMS protocol instance.
 func (g *GemHandler) Protocol() *hsms.HsmsProtocol {
 	return g.protocol
+}
+
+func resolveLogger(l Logger) common.Logger {
+	if l != nil {
+		return l
+	}
+	return common.NopLogger()
 }
