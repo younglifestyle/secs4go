@@ -123,7 +123,7 @@ func (c *fixlenCodec) Receive() (interface{}, error) {
 		return nil, err
 	}
 	size := c.headDecoder(c.headBuf)
-	if size > c.maxRecv {
+	if size < 0 || size > c.maxRecv {
 		return nil, ErrTooLargePacket
 	}
 	if cap(c.bodyBuf) < size {
@@ -146,9 +146,22 @@ func (c *fixlenCodec) Send(msg interface{}) error {
 		return err
 	}
 	buff := c.sendBuf.Bytes()
-	c.headEncoder(buff, len(buff)-c.n)
-	_, err = c.rw.Write(buff)
-	return err
+	payloadSize := len(buff) - c.n
+	if payloadSize > c.maxSend {
+		return ErrTooLargePacket
+	}
+	c.headEncoder(buff, payloadSize)
+	for len(buff) > 0 {
+		n, writeErr := c.rw.Write(buff)
+		if writeErr != nil {
+			return writeErr
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		buff = buff[n:]
+	}
+	return nil
 }
 
 func (c *fixlenCodec) Close() error {

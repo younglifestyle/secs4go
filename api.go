@@ -29,6 +29,21 @@ type DeadlineCodec interface {
 	SetWriteDeadline(time.Time) error
 }
 
+// IntercharacterTimeoutCodec configures a codec-level timeout that is reset
+// after every successful network read. This models HSMS T8 more accurately
+// than applying one deadline to the complete message.
+type IntercharacterTimeoutCodec interface {
+	Codec
+	SetIntercharacterTimeout(time.Duration)
+}
+
+// NonFatalError marks a receive error that has consumed enough input for the
+// protocol layer to report it before deciding whether to close the session.
+type NonFatalError interface {
+	error
+	NonFatal() bool
+}
+
 type ClearSendChan interface {
 	ClearSendChan(<-chan interface{})
 }
@@ -48,6 +63,7 @@ func Dial(network, address string, protocol Protocol, sendChanSize int) (*Sessio
 	}
 	codec, err := protocol.NewCodec(conn)
 	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	return NewSession(codec, sendChanSize), nil
@@ -60,6 +76,7 @@ func DialTimeout(network, address string, timeout time.Duration, protocol Protoc
 	}
 	codec, err := protocol.NewCodec(conn)
 	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	return NewSession(codec, sendChanSize), nil

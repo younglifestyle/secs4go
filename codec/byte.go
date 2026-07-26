@@ -50,9 +50,17 @@ func (c *byteCodec) Send(msg interface{}) error {
 		return errors.New("Send Byte Format Error")
 	}
 
-	_, err := c.w.Write(b)
-
-	return err
+	for len(b) > 0 {
+		n, err := c.w.Write(b)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		b = b[n:]
+	}
+	return nil
 }
 
 func (c *byteCodec) Close() error {

@@ -101,11 +101,20 @@ func NewGemHandler(opts Options) (*GemHandler, error) {
 		return nil, errors.New("gem: protocol is required")
 	}
 	opts.applyDefaults()
+	if opts.DeviceID != 0 {
+		if err := opts.Protocol.SetSessionID(int(opts.DeviceID)); err != nil {
+			return nil, fmt.Errorf("gem: configure device ID: %w", err)
+		}
+	}
+	deviceID := uint16(opts.Protocol.SessionID())
+	if opts.Protocol.SessionID() < 0 || opts.Protocol.SessionID() > 0xFFFE {
+		return nil, fmt.Errorf("gem: protocol session ID %d is reserved or invalid: %w", opts.Protocol.SessionID(), hsms.ErrInvalidSessionID)
+	}
 
 	handler := &GemHandler{
 		protocol:      opts.Protocol,
 		deviceType:    opts.DeviceType,
-		deviceID:      opts.DeviceID,
+		deviceID:      deviceID,
 		mdln:          opts.MDLN,
 		softrev:       opts.SOFTREV,
 		establishWait: opts.EstablishCommunicationWait,

@@ -29,7 +29,7 @@ protocol := hsms.NewHsmsProtocol("127.0.0.1", 5000, false, 0x200, "eqp")
 protocol.Timeouts().SetLinktest(30) // optional overrides
 ```
 
-`sessionID` is the application session used for SECS-II data once the connection is SELECTED. Control packets such as `select.req` may legally use the wildcard `0xFFFF`; the Go stack automatically adopts the negotiated session in that case.
+`sessionID` is the application session/device ID used for SECS-II data once the connection is SELECTED. HSMS control packets use the required `0xFFFF` control-session value and do not negotiate or replace this data-message session ID.
 
 ## 3. Creating a GEM Handler
 

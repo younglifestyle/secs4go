@@ -37,12 +37,12 @@ func TestBuildS9F1_UnrecognizedDeviceID(t *testing.T) {
 	}
 
 	values, ok := binNode.Values().([]int)
-	if !ok || len(values) != 1 {
-		t.Fatalf("Expected single binary value, got %v", binNode.Values())
+	if !ok || len(values) != 10 {
+		t.Fatalf("Expected 10-byte MHEAD, got %v", binNode.Values())
 	}
 
-	if values[0] != int(unrecognizedID) {
-		t.Errorf("Expected device ID %d, got %d", unrecognizedID, values[0])
+	if values[1] != int(unrecognizedID) {
+		t.Errorf("Expected device ID %d, got %d", unrecognizedID, values[1])
 	}
 }
 
@@ -76,12 +76,12 @@ func TestBuildS9F3_UnrecognizedStream(t *testing.T) {
 	}
 
 	values, ok := binNode.Values().([]int)
-	if !ok || len(values) != 1 {
-		t.Fatalf("Expected single binary value, got %v", binNode.Values())
+	if !ok || len(values) != 10 {
+		t.Fatalf("Expected 10-byte MHEAD, got %v", binNode.Values())
 	}
 
-	if values[0] != int(unrecognizedStream) {
-		t.Errorf("Expected stream %d, got %d", unrecognizedStream, values[0])
+	if values[2] != int(unrecognizedStream) {
+		t.Errorf("Expected stream %d, got %d", unrecognizedStream, values[2])
 	}
 }
 
@@ -115,12 +115,12 @@ func TestBuildS9F5_UnrecognizedFunction(t *testing.T) {
 	}
 
 	values, ok := binNode.Values().([]int)
-	if !ok || len(values) != 1 {
-		t.Fatalf("Expected single binary value, got %v", binNode.Values())
+	if !ok || len(values) != 10 {
+		t.Fatalf("Expected 10-byte MHEAD, got %v", binNode.Values())
 	}
 
-	if values[0] != int(unrecognizedFunction) {
-		t.Errorf("Expected function %d, got %d", unrecognizedFunction, values[0])
+	if values[3] != int(unrecognizedFunction) {
+		t.Errorf("Expected function %d, got %d", unrecognizedFunction, values[3])
 	}
 }
 
@@ -142,19 +142,18 @@ func TestBuildS9F7_IllegalData(t *testing.T) {
 		t.Errorf("Expected function 7, got %d", msg.FunctionCode())
 	}
 
-	// S9F7 should have empty body per standard
+	// S9F7 carries the offending 10-byte MHEAD.
 	body, err := msg.Get()
 	if err != nil {
 		t.Fatalf("Failed to get message body: %v", err)
 	}
 
-	listNode, ok := body.(*ast.ListNode)
+	binNode, ok := body.(*ast.BinaryNode)
 	if !ok {
-		t.Fatalf("Expected ListNode, got %T", body)
+		t.Fatalf("Expected BinaryNode, got %T", body)
 	}
-
-	if listNode.Size() != 0 {
-		t.Errorf("Expected empty list, got size %d", listNode.Size())
+	if values, ok := binNode.Values().([]int); !ok || len(values) != 10 {
+		t.Errorf("Expected 10-byte MHEAD, got %v", binNode.Values())
 	}
 }
 
@@ -223,19 +222,18 @@ func TestBuildS9F11_DataTooLong(t *testing.T) {
 		t.Errorf("Expected function 11, got %d", msg.FunctionCode())
 	}
 
-	// S9F11 should have empty body per standard
+	// S9F11 carries the offending 10-byte MHEAD.
 	body, err := msg.Get()
 	if err != nil {
 		t.Fatalf("Failed to get message body: %v", err)
 	}
 
-	listNode, ok := body.(*ast.ListNode)
+	binNode, ok := body.(*ast.BinaryNode)
 	if !ok {
-		t.Fatalf("Expected ListNode, got %T", body)
+		t.Fatalf("Expected BinaryNode, got %T", body)
 	}
-
-	if listNode.Size() != 0 {
-		t.Errorf("Expected empty list, got size %d", listNode.Size())
+	if values, ok := binNode.Values().([]int); !ok || len(values) != 10 {
+		t.Errorf("Expected 10-byte MHEAD, got %v", binNode.Values())
 	}
 }
 
@@ -273,6 +271,24 @@ func TestBuildS9F13_ConversationTimeout(t *testing.T) {
 	}
 }
 
+func TestBuildS9F13ConversationTimeout(t *testing.T) {
+	msg, err := BuildS9F13ConversationTimeout("S01F01", ast.NewUintNode(1, uint8(7)), []byte{1, 2, 3, 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := msg.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, ok := body.(*ast.ListNode)
+	if !ok || list.Size() != 2 {
+		t.Fatalf("unexpected S9F13 body: %v", body)
+	}
+	if _, err := BuildS9F13ConversationTimeout("S1F1", ast.NewBinaryNode(), []byte{1, 2, 3, 4}); err == nil {
+		t.Fatal("expected invalid MEXP length to fail")
+	}
+}
+
 // TestS9ErrorInfo verifies S9ErrorInfo structure
 func TestS9ErrorInfo(t *testing.T) {
 	systemBytes := []byte{0x00, 0x00, 0x00, 0x08}
@@ -307,5 +323,23 @@ func TestMaxHSMSMessageSize(t *testing.T) {
 	expected := 16 * 1024 * 1024
 	if MaxHSMSMessageSize != expected {
 		t.Errorf("Expected MaxHSMSMessageSize to be %d, got %d", expected, MaxHSMSMessageSize)
+	}
+}
+
+func TestS9CallbackDecodesOriginalHeader(t *testing.T) {
+	protocol := NewHsmsProtocol("127.0.0.1", 5000, true, 7, "test")
+	header := []byte{0, 7, 0x81, 1, 0, 0, 1, 2, 3, 4}
+	message := BuildS9F9(header, []byte{9, 9, 9, 9})
+	var got *S9ErrorInfo
+	protocol.OnS9Error = func(info *S9ErrorInfo) { got = info }
+	protocol.triggerS9ErrorCallback(message)
+	if got == nil || got.OriginalMessage == nil {
+		t.Fatal("callback did not decode the original message header")
+	}
+	if got.OriginalMessage.SessionID() != 7 || got.OriginalMessage.StreamCode() != 1 || got.OriginalMessage.FunctionCode() != 1 {
+		t.Fatalf("unexpected original message: %#v", got.OriginalMessage)
+	}
+	if values := got.SystemBytes; len(values) != 4 || values[0] != 1 || values[3] != 4 {
+		t.Fatalf("unexpected original system bytes: %v", values)
 	}
 }

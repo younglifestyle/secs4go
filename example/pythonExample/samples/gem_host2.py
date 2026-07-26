@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import threading
 import time
@@ -237,6 +238,12 @@ class GoEquipmentHost(secsgem.gem.GemHostHandler):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Python host for secs4go interoperability tests")
+    parser.add_argument("--address", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=15000)
+    parser.add_argument("--session", type=int, default=2)
+    args = parser.parse_args()
+
     comm_handler = CommunicationLogFileHandler("log", "host2")
     comm_handler.setFormatter(logging.Formatter("%(asctime)s: %(message)s"))
     logging.getLogger("communication").addHandler(comm_handler)
@@ -248,11 +255,11 @@ def main() -> None:
     )
 
     settings = secsgem.hsms.HsmsSettings(
-        address="127.0.0.1",
-        port=15000,
-        connect_mode=secsgem.hsms.HsmsConnectMode.PASSIVE,
+        address=args.address,
+        port=args.port,
+        connect_mode=secsgem.hsms.HsmsConnectMode.ACTIVE,
         device_type=secsgem.common.DeviceType.HOST,
-        session_id=2,
+        device_id=args.session,
     )
 
     host = GoEquipmentHost(settings)

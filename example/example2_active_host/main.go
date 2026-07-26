@@ -170,7 +170,7 @@ func runStatusPolling(handler *gem.GemHandler) {
 
 		// 只请求我们关心的（也可以放行全部非保留项）
 		if n, ok := info.ID.(int64); ok {
-			if n != 1101 && n != 2001 && n != 3002 {
+			if n != 1001 {
 				continue
 			}
 		}
@@ -203,7 +203,7 @@ func runReportWorkflow(handler *gem.GemHandler, eventCh <-chan gem.EventReport) 
 		log.Printf("DefineReports(clear) returned DRACK=%d", ack)
 	}
 
-	report := gem.ReportDefinitionRequest{ReportID: 4001, VIDs: []interface{}{int64(1101), int64(2001)}}
+	report := gem.ReportDefinitionRequest{ReportID: 4001, VIDs: []interface{}{int64(1001), int64(2001)}}
 	if ack, err := handler.DefineReports(report); err != nil {
 		log.Printf("DefineReports error: %v", err)
 		return

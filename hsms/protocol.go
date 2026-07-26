@@ -32,6 +32,9 @@ var (
 	ErrNotSelected = errors.New("hsms: connection not selected")
 	// ErrTimeout indicates the remote side did not answer within the configured timeout.
 	ErrTimeout = errors.New("hsms: timeout waiting for response")
+	// ErrInvalidSessionID indicates that 0xFFFF, which is reserved for HSMS
+	// control messages, was configured for SECS-II data messages.
+	ErrInvalidSessionID = errors.New("hsms: invalid data-message session ID")
 )
 
 type LoggingMode int
@@ -99,7 +102,7 @@ type HsmsProtocol struct {
 
 	linktestTimerMu sync.Mutex
 	linktestTimer   *time.Ticker
-	disconnectFlg   chan struct{}
+	linktestCancel  chan struct{}
 
 	t7TimerMu sync.Mutex
 	t7Timer   *time.Timer
@@ -133,7 +136,6 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 		timeouts:             NewSecsTimeout(),
 		systemQueues:         make(map[uint32]*utils.Deque),
 		handlers:             make(map[string]DataMessageHandler),
-		disconnectFlg:        make(chan struct{}, 1),
 		connectThreadRunning: atomic.NewBool(false),
 	}
 	h.logCfg.Writer = os.Stderr
@@ -150,40 +152,39 @@ func NewHsmsProtocol(address string, port int, active bool, sessionID int, name 
 	return h
 }
 
-func (p *HsmsProtocol) clearDisconnectFlag() {
-	for {
-		select {
-		case <-p.disconnectFlg:
-		default:
-			return
-		}
-	}
-}
-
 func (p *HsmsProtocol) startLinktestTimer() {
-	ticker := time.NewTicker(time.Duration(p.timeouts.Linktest()) * time.Second)
+	interval := time.Duration(p.timeouts.Linktest()) * time.Second
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	cancel := make(chan struct{})
 
 	p.linktestTimerMu.Lock()
+	if p.linktestCancel != nil {
+		close(p.linktestCancel)
+	}
 	p.linktestTimer = ticker
+	p.linktestCancel = cancel
 	p.linktestTimerMu.Unlock()
 
 	defer func() {
 		ticker.Stop()
 		p.linktestTimerMu.Lock()
-		if p.linktestTimer == ticker {
+		if p.linktestCancel == cancel {
 			p.linktestTimer = nil
+			p.linktestCancel = nil
 		}
 		p.linktestTimerMu.Unlock()
 	}()
 
-	p.clearDisconnectFlag()
 	p.hsmsConnection.sendLinktestReq()
 
 	for {
 		select {
 		case <-ticker.C:
 			p.hsmsConnection.sendLinktestReq()
-		case <-p.disconnectFlg:
+		case <-cancel:
 			return
 		}
 	}
@@ -193,11 +194,13 @@ func (p *HsmsProtocol) stopLinktestTimer() {
 	p.linktestTimerMu.Lock()
 	defer p.linktestTimerMu.Unlock()
 
+	if p.linktestCancel != nil {
+		close(p.linktestCancel)
+		p.linktestCancel = nil
+	}
 	if p.linktestTimer != nil {
-		select {
-		case p.disconnectFlg <- struct{}{}:
-		default:
-		}
+		p.linktestTimer.Stop()
+		p.linktestTimer = nil
 	}
 }
 
@@ -213,11 +216,14 @@ func (p *HsmsProtocol) startT7Timer() {
 	}
 	p.t7Timer = time.AfterFunc(duration, func() {
 		p.logger.Warn("T7 timeout", "duration", duration)
+		if err := p.connectionState.TimeoutT7(); err != nil {
+			// Selection or disconnection won the race with the timer. In that
+			// case the connection must not be closed by a stale T7 callback.
+			p.logger.Debug("ignoring stale T7 timeout", "error", err)
+			return
+		}
 		p.connected.Store(false)
 		p.stopLinktestTimer()
-		if err := p.connectionState.TimeoutT7(); err != nil {
-			p.logger.Error("timeoutT7 transition error", "error", err)
-		}
 		if err := p.hsmsConnection.Close(); err != nil {
 			p.logger.Error("close session after T7 timeout", "error", err)
 		}
@@ -251,6 +257,7 @@ func (p *HsmsProtocol) onStateDisconnect(ctx context.Context, _ *fsm.Event) {
 	p.connected.Store(false)
 	p.stopLinktestTimer()
 	p.stopT7Timer()
+	p.failPendingTransactions(ErrNotConnected)
 	if p.enabled.Load() {
 		if p.connectThreadRunning.CompareAndSwap(false, true) {
 			go p.startConnectThread()
@@ -283,11 +290,7 @@ func (p *HsmsProtocol) encodeSystemID(num uint32) []byte {
 }
 
 func (p *HsmsProtocol) getNextSystemCounter() uint32 {
-	num := int(p.systemCounter.Inc())
-	if num > (2<<32)-1 {
-		p.systemCounter.Store(0)
-	}
-	return uint32(num)
+	return p.systemCounter.Inc()
 }
 
 func (p *HsmsProtocol) createQueue(systemID uint32) *utils.Deque {
@@ -309,6 +312,18 @@ func (p *HsmsProtocol) removeQueue(systemID uint32) {
 	p.queueMu.Lock()
 	delete(p.systemQueues, systemID)
 	p.queueMu.Unlock()
+}
+
+func (p *HsmsProtocol) failPendingTransactions(err error) {
+	p.queueMu.RLock()
+	queues := make([]*utils.Deque, 0, len(p.systemQueues))
+	for _, queue := range p.systemQueues {
+		queues = append(queues, queue)
+	}
+	p.queueMu.RUnlock()
+	for _, queue := range queues {
+		queue.Close(err)
+	}
 }
 
 func (p *HsmsProtocol) OnConnectionEstablished() {
@@ -336,6 +351,7 @@ func (p *HsmsProtocol) Disable() {
 	p.stopLinktestTimer()
 	p.stopT7Timer()
 	p.connected.Store(false)
+	p.failPendingTransactions(ErrNotConnected)
 
 	if p.active {
 		if sess := p.hsmsConnection.Session(); sess != nil && !sess.IsClosed() {
@@ -351,10 +367,6 @@ func (p *HsmsProtocol) Disable() {
 			}
 			// allow a brief moment for remote to process before closing
 			time.Sleep(200 * time.Millisecond)
-		}
-		select {
-		case p.disconnectFlg <- struct{}{}:
-		default:
 		}
 		if err := p.hsmsConnection.Close(); err != nil {
 			p.logger.Error("close session failed", "error", err)
@@ -486,48 +498,20 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 	p.logControlMessage("RX", message)
 
 	systemID := binary.BigEndian.Uint32(message.SystemBytes())
+	if ctrl, ok := message.(*ast.ControlMessage); ok && ctrl.SessionID() != 0xFFFF {
+		p.logger.Warn("control message has invalid session ID", "type", message.Type(), "session", ctrl.SessionID())
+		p.hsmsConnection.sendReject(message, RejectReasonSTypeNotSupported)
+		return
+	}
 
 	switch message.Type() {
 	case hsms.SelectReqStr:
-		ctrl, ok := message.(*ast.ControlMessage)
+		_, ok := message.(*ast.ControlMessage)
 		if !ok {
 			p.logger.Warn("received malformed select.req")
 			p.hsmsConnection.sendReject(message, RejectReasonBusyOrAlreadyActive)
 			return
 		}
-
-		receivedSession := ctrl.SessionID()
-		expectedSession := uint16(p.sessionID)
-		if receivedSession != expectedSession {
-			// 0xFFFF0000 是 HSMS 标准规定的“系统消息会话 ID”，只用于 Select/Linktest 等控制消息。
-			acceptMismatch := false
-			if receivedSession == 0xFFFF {
-				p.logger.Info(
-					"select.req session mismatch: remote used wildcard",
-					"remote", receivedSession, "expected", expectedSession,
-				)
-				acceptMismatch = true
-			} else if expectedSession == 0 || expectedSession == 0xFFFF {
-				p.logger.Info(
-					"select.req session mismatch: adopting remote session",
-					"remote", receivedSession, "expected", expectedSession,
-				)
-				p.sessionID = int(receivedSession)
-				p.hsmsConnection.sessionID = int(receivedSession)
-				acceptMismatch = true
-			}
-			if !acceptMismatch {
-				p.logger.Warn("select.req session mismatch", "remote", receivedSession, "expected", expectedSession)
-				p.hsmsConnection.sendSelectRsp(message, ControlStatusDenied)
-				_ = p.hsmsConnection.Close()
-				p.connected.Store(false)
-				if err := p.connectionState.Disconnect(); err != nil {
-					p.logger.Error("change state to NOT-CONNECTED failed", "error", err)
-				}
-				return
-			}
-		}
-
 		if !p.connected.Load() {
 			p.hsmsConnection.sendReject(message, RejectReasonNotReady)
 			return
@@ -538,9 +522,12 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 
 	case hsms.SelectRspStr:
-		if queue, ok := p.fetchQueue(systemID); ok {
-			queue.Put(message)
+		queue, transactionOpen := p.fetchQueue(systemID)
+		if !transactionOpen {
+			p.hsmsConnection.sendReject(message, RejectReasonTransactionNotOpen)
+			return
 		}
+		queue.Put(message)
 		ctrl, ok := message.(*ast.ControlMessage)
 		if !ok {
 			p.logger.Warn("received malformed select.rsp")
@@ -570,12 +557,15 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 
 	case hsms.DeselectRspStr:
+		queue, transactionOpen := p.fetchQueue(systemID)
+		if !transactionOpen {
+			p.hsmsConnection.sendReject(message, RejectReasonTransactionNotOpen)
+			return
+		}
 		if err := p.connectionState.Deselect(); err != nil {
 			p.logger.Error("change state to NOT-SELECTED failed", "error", err)
 		}
-		if queue, ok := p.fetchQueue(systemID); ok {
-			queue.Put(message)
-		}
+		queue.Put(message)
 
 	case hsms.LinktestReqStr:
 		if !p.connected.Load() {
@@ -583,6 +573,20 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 			return
 		}
 		p.hsmsConnection.sendLinkTestRsp(message)
+
+	case hsms.LinktestRspStr:
+		if queue, ok := p.fetchQueue(systemID); ok {
+			queue.Put(message)
+		} else {
+			p.hsmsConnection.sendReject(message, RejectReasonTransactionNotOpen)
+		}
+
+	case hsms.RejectReqStr:
+		if queue, ok := p.fetchQueue(systemID); ok {
+			queue.Put(message)
+		} else {
+			p.logger.Warn("received reject.req for unknown transaction", "system", systemID)
+		}
 
 	case hsms.SeparateReqStr:
 		p.logger.Info("received separate.req, closing session")
@@ -594,6 +598,18 @@ func (p *HsmsProtocol) handleHsmsRequests(message ast.HSMSMessage) {
 		}
 		_ = p.hsmsConnection.Close()
 		p.hsmsConnection.SetSession(nil)
+
+	case "undefined":
+		ctrl, ok := message.(*ast.ControlMessage)
+		if !ok {
+			return
+		}
+		reason := RejectReasonSTypeNotSupported
+		if ctrl.PType() != 0 {
+			reason = RejectReasonPTypeNotSupported
+		}
+		p.logger.Warn("unsupported HSMS control header", "ptype", ctrl.PType(), "stype", ctrl.SType())
+		p.hsmsConnection.sendReject(message, reason)
 
 	default:
 		if queue, ok := p.fetchQueue(systemID); ok {
@@ -796,7 +812,9 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 
 	defer func() {
 		p.connDoneMu.Lock()
-		p.connDone = nil
+		if p.connDone == done {
+			p.connDone = nil
+		}
 		p.connDoneMu.Unlock()
 
 		if connection != nil {
@@ -810,37 +828,49 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 	}()
 
 	t8Duration := time.Duration(p.timeouts.T8NetworkIntercharTimeout()) * time.Second
-	var deadlineCodec link.DeadlineCodec
 	if t8Duration > 0 {
-		if dc, ok := connection.Codec().(link.DeadlineCodec); ok {
-			deadlineCodec = dc
+		if configurable, ok := connection.Codec().(link.IntercharacterTimeoutCodec); ok {
+			configurable.SetIntercharacterTimeout(t8Duration)
+			defer configurable.SetIntercharacterTimeout(0)
 		} else {
-			p.logger.Warn("T8 timeout configured but codec does not support deadlines; disabling T8 enforcement")
+			p.logger.Warn("T8 timeout configured but codec does not support intercharacter deadlines; disabling T8 enforcement")
 			t8Duration = 0
 		}
-	}
-	if deadlineCodec != nil {
-		defer deadlineCodec.SetReadDeadline(time.Time{})
 	}
 
 	p.OnConnectionEstablished()
 
 	for p.enabled.Load() {
-		if deadlineCodec != nil {
-			if err := deadlineCodec.SetReadDeadline(time.Now().Add(t8Duration)); err != nil {
-				p.logger.Error("set read deadline failed", "error", err)
-			}
-		}
-
 		rsp, err := connection.Receive()
 
-		if deadlineCodec != nil {
-			if clrErr := deadlineCodec.SetReadDeadline(time.Time{}); clrErr != nil {
-				p.logger.Error("clear read deadline failed", "error", clrErr)
-			}
-		}
-
 		if err != nil {
+			var parseErr *codec.MessageParseError
+			if errors.As(err, &parseErr) {
+				if p.connectionState.CurrentState() == StateConnectedSelected {
+					p.logger.Warn("illegal SECS-II data, sending S9F7")
+					p.sendS9F7IllegalData(parseErr.Header)
+				} else {
+					p.hsmsConnection.sendReject(ast.NewHSMSControlMessage(parseErr.Header), RejectReasonNotSelected)
+				}
+				continue
+			}
+			var tooLargeErr *codec.MessageTooLargeError
+			if errors.As(err, &tooLargeErr) {
+				p.logger.Warn("HSMS message too long, sending S9F11", "length", tooLargeErr.Length)
+				if p.connectionState.CurrentState() == StateConnectedSelected {
+					p.sendS9F11DataTooLong(tooLargeErr.Header)
+				} else {
+					p.hsmsConnection.sendReject(ast.NewHSMSControlMessage(tooLargeErr.Header), RejectReasonNotSelected)
+				}
+				p.connected.Store(false)
+				p.stopLinktestTimer()
+				if p.connectionState.CurrentState() != StateNotConnected {
+					if transitionErr := p.connectionState.Disconnect(); transitionErr != nil {
+						p.logger.Error("change state to NOT-CONNECTED failed", "error", transitionErr)
+					}
+				}
+				break
+			}
 			p.connected.Store(false)
 			p.stopLinktestTimer()
 
@@ -863,7 +893,11 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 			break
 		}
 
-		message := rsp.(ast.HSMSMessage)
+		message, ok := rsp.(ast.HSMSMessage)
+		if !ok {
+			p.logger.Warn("unexpected codec payload", "type", fmt.Sprintf("%T", rsp))
+			continue
+		}
 		if message.Type() != hsms.DataMessageStr {
 			p.handleHsmsRequests(message)
 			continue
@@ -879,12 +913,22 @@ func (p *HsmsProtocol) OnConnectionEstablishedAndStartReceiver(connection *link.
 
 		if p.connectionState.CurrentState() != StateConnectedSelected {
 			p.logger.Warn("received message while not selected")
+			p.hsmsConnection.sendReject(dataMessage, RejectReasonNotSelected)
+			continue
+		}
+		if dataMessage.SessionID() != p.sessionID {
+			p.sendS9F1UnrecognizedDeviceID(dataMessage)
 			continue
 		}
 
 		systemID := binary.BigEndian.Uint32(dataMessage.SystemBytes())
 		if queue, ok := p.fetchQueue(systemID); ok {
 			queue.Put(dataMessage)
+			continue
+		}
+		if dataMessage.FunctionCode()%2 == 0 {
+			p.logger.Warn("received secondary message for unknown transaction", "system", systemID)
+			p.hsmsConnection.sendReject(dataMessage, RejectReasonTransactionNotOpen)
 			continue
 		}
 
@@ -898,6 +942,9 @@ func (p *HsmsProtocol) ensureReady(requireSelected bool) error {
 	}
 	if requireSelected && p.connectionState.CurrentState() != StateConnectedSelected {
 		return ErrNotSelected
+	}
+	if p.sessionID < 0 || p.sessionID > 0xFFFE {
+		return ErrInvalidSessionID
 	}
 	return nil
 }
@@ -948,6 +995,9 @@ func (p *HsmsProtocol) SendAndWait(message *ast.DataMessage) (*ast.DataMessage, 
 
 	resp, err := queue.Get(p.timeouts.T3ReplyTimeout())
 	if err != nil {
+		if errors.Is(err, ErrNotConnected) {
+			return nil, ErrNotConnected
+		}
 		// On T3 timeout (Wait Bit=True was sent), send S9F9
 		p.sendS9F9TransactionTimeout(outgoing)
 		return nil, ErrT3Timeout
@@ -1066,6 +1116,22 @@ func (p *HsmsProtocol) CurrentState() string {
 	return p.connectionState.CurrentState()
 }
 
+// SessionID returns the device/session identifier used by HSMS data messages.
+func (p *HsmsProtocol) SessionID() int { return p.sessionID }
+
+// SetSessionID updates the data-message session identifier before Enable.
+func (p *HsmsProtocol) SetSessionID(sessionID int) error {
+	if sessionID < 0 || sessionID > 0xFFFE {
+		return fmt.Errorf("hsms: session ID %d is outside 0..65534: %w", sessionID, ErrInvalidSessionID)
+	}
+	if p.enabled.Load() || p.connected.Load() {
+		return errors.New("hsms: cannot change session ID while enabled")
+	}
+	p.sessionID = sessionID
+	p.hsmsConnection.sessionID = sessionID
+	return nil
+}
+
 // Timeouts returns protocol timeout configuration.
 func (p *HsmsProtocol) Timeouts() *SecsTimeout {
 	return p.timeouts
@@ -1098,12 +1164,48 @@ func (p *HsmsProtocol) triggerS9ErrorCallback(msg *ast.DataMessage) {
 		errorText = "Unknown S9 Error"
 	}
 
+	messageHeader := s9MessageHeader(msg)
+	var originalMessage *ast.DataMessage
+	originalSystemBytes := msg.SystemBytes()
+	if len(messageHeader) == 10 {
+		originalSystemBytes = append([]byte(nil), messageHeader[6:10]...)
+		stream := int(messageHeader[2] & 0x7F)
+		function := int(messageHeader[3])
+		waitBit := int(messageHeader[2] >> 7)
+		if function%2 == 0 {
+			waitBit = 0
+		}
+		sessionID := int(binary.BigEndian.Uint16(messageHeader[:2]))
+		originalMessage = ast.NewHSMSDataMessage("", stream, function, waitBit, "H<->E", ast.NewEmptyItemNode(), sessionID, originalSystemBytes)
+	}
+
 	errorInfo := &S9ErrorInfo{
 		ErrorCode:       function,
 		ErrorText:       errorText,
-		OriginalMessage: nil, // We don't have original message here easily for RX
-		SystemBytes:     msg.SystemBytes(),
+		OriginalMessage: originalMessage,
+		SystemBytes:     originalSystemBytes,
+		MessageHeader:   messageHeader,
 	}
 
 	p.OnS9Error(errorInfo)
+}
+
+func s9MessageHeader(msg *ast.DataMessage) []byte {
+	body, err := msg.Get()
+	if err != nil {
+		return nil
+	}
+	binaryNode, ok := body.(*ast.BinaryNode)
+	if !ok {
+		return nil
+	}
+	values, ok := binaryNode.Values().([]int)
+	if !ok || len(values) != 10 {
+		return nil
+	}
+	header := make([]byte, 10)
+	for i, value := range values {
+		header[i] = byte(value)
+	}
+	return header
 }

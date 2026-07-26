@@ -94,13 +94,12 @@ func (p *parser) parseMessage() (ok bool) {
 	headerBytes := p.input[p.pos : p.pos+10]
 	p.pos += 10
 
-	if headerBytes[4] != 0 { // PType
-		// Not a SECS-II message
-		return false
-	}
-
 	switch headerBytes[5] { // SType
 	case sTypeDataMessage:
+		if headerBytes[4] != 0 { // Unsupported PType; preserve header for Reject.req.
+			p.msg = ast.NewHSMSControlMessage(headerBytes)
+			return true
+		}
 		stream := int(headerBytes[2] & 0b01111111)
 		function := int(headerBytes[3])
 		waitBit := int(headerBytes[2] >> 7)
@@ -110,17 +109,28 @@ func (p *parser) parseMessage() (ok bool) {
 		if !ok {
 			return false
 		}
+		if p.pos != len(p.input) {
+			return false
+		}
 		p.msg = ast.NewHSMSDataMessage("", stream, function, waitBit, "H<->E", dataItem, sessionID, systemBytes)
 		return true
 
 	case sTypeSelectReq, sTypeSelectRsp, sTypeDeselectReq, sTypeDeselectRsp,
 		sTypeLinktestReq, sTypeLinktestRsp, sTypeRejectReq, sTypeSeparateReq:
+		if headerBytes[4] != 0 || p.msgLength != 10 {
+			return false
+		}
 		p.msg = ast.NewHSMSControlMessage(headerBytes)
 		return true
 
 	default:
-		// Undefined SType
-		return false
+		// Preserve unsupported control headers so the protocol layer can return
+		// a standards-compliant Reject.req instead of silently disconnecting.
+		if p.msgLength != 10 {
+			return false
+		}
+		p.msg = ast.NewHSMSControlMessage(headerBytes)
+		return true
 	}
 	// should not reach here
 }
@@ -143,7 +153,7 @@ func (p *parser) parseMessageText() (dataItem ast.ItemNode, ok bool) {
 	var length int
 	for i, b := range lengthBytes {
 		shift := (lengthBytesCount - i - 1) * 8
-		length += int(b << shift)
+		length += int(b) << shift
 	}
 	p.pos += lengthBytesCount
 

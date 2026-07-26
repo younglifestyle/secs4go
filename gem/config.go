@@ -13,7 +13,7 @@ import (
 type Options struct {
 	Protocol                   *hsms.HsmsProtocol
 	DeviceType                 DeviceType
-	DeviceID                   uint16
+	DeviceID                   uint16 // Optional override for Protocol's data-message session ID; zero keeps the protocol value.
 	MDLN                       string
 	SOFTREV                    string
 	EstablishCommunicationWait time.Duration

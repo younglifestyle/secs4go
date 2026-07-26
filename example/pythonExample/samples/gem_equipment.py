@@ -83,7 +83,7 @@ settings = secsgem.hsms.HsmsSettings(
     port=5000,
     connect_mode=secsgem.hsms.HsmsConnectMode.PASSIVE,
     device_type=secsgem.common.DeviceType.EQUIPMENT,
-    session_id=2
+    device_id=2
 )
 
 h = SampleEquipment(settings)

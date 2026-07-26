@@ -40,9 +40,9 @@ logging.basicConfig(format='%(asctime)s %(name)s.%(funcName)s: %(message)s', lev
 settings = secsgem.hsms.HsmsSettings(
     address="127.0.0.1",
     port=5000,
-    connect_mode=secsgem.hsms.HsmsConnectMode.PASSIVE,
+    connect_mode=secsgem.hsms.HsmsConnectMode.ACTIVE,
     device_type=secsgem.common.DeviceType.HOST,
-    session_id=2
+    device_id=2
 )
 
 h = SampleHost(settings)

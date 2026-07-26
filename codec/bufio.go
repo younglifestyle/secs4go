@@ -132,3 +132,9 @@ func (c *bufioCodec) SetReadDeadline(t time.Time) error {
 func (c *bufioCodec) SetWriteDeadline(t time.Time) error {
 	return c.stream.SetWriteDeadline(t)
 }
+
+func (c *bufioCodec) SetIntercharacterTimeout(timeout time.Duration) {
+	if configurable, ok := c.base.(link.IntercharacterTimeoutCodec); ok {
+		configurable.SetIntercharacterTimeout(timeout)
+	}
+}

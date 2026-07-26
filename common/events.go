@@ -1,6 +1,7 @@
 package common
 
 import (
+	"reflect"
 	"sync"
 )
 
@@ -12,6 +13,9 @@ type Event struct {
 
 // AddCallback adds a new callback to the event.
 func (e *Event) AddCallback(callback func(data map[string]interface{})) {
+	if callback == nil {
+		return
+	}
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
@@ -20,11 +24,15 @@ func (e *Event) AddCallback(callback func(data map[string]interface{})) {
 
 // RemoveCallback removes a callback from the event.
 func (e *Event) RemoveCallback(callback func(data map[string]interface{})) {
+	if callback == nil {
+		return
+	}
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
+	target := reflect.ValueOf(callback).Pointer()
 	for i, cb := range e.callbacks {
-		if &cb == &callback {
+		if reflect.ValueOf(cb).Pointer() == target {
 			// Remove the callback by copying the slice without the element at index i.
 			e.callbacks = append(e.callbacks[:i], e.callbacks[i+1:]...)
 			return
@@ -35,9 +43,10 @@ func (e *Event) RemoveCallback(callback func(data map[string]interface{})) {
 // Fire raises the event and calls all callbacks.
 func (e *Event) Fire(data map[string]interface{}) {
 	e.mutex.Lock()
-	defer e.mutex.Unlock()
+	callbacks := append([]func(map[string]interface{}){}, e.callbacks...)
+	e.mutex.Unlock()
 
-	for _, callback := range e.callbacks {
+	for _, callback := range callbacks {
 		callback(data)
 	}
 }

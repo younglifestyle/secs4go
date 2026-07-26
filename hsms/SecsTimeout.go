@@ -1,6 +1,9 @@
 package hsms
 
+import "sync"
+
 type SecsTimeout struct {
+	mu       sync.RWMutex
 	linktest int
 	// default 45s, 回复超时 T3 (T3 reply timeout)表示一个实体等待回复消息的最长时间, 设备状态，则向主机发送 SECS-II S9F9 消息
 	t3ReplyTimeout int
@@ -26,17 +29,21 @@ type SecsTimeout struct {
 	reconnectBackoffMax int
 	// Whether to enable automatic reconnection
 	autoReconnect bool
-    
-    // Default device ID to use for S9 messages
-    deviceID int
+
+	// Default device ID to use for S9 messages
+	deviceID int
 }
 
 func (t *SecsTimeout) SetDeviceID(id int) {
-    t.deviceID = id
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.deviceID = id
 }
 
 func (t *SecsTimeout) DeviceID() int {
-    return t.deviceID
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.deviceID
 }
 
 func NewSecsTimeout() *SecsTimeout {
@@ -48,57 +55,81 @@ func NewSecsTimeout() *SecsTimeout {
 		t7NotSelectTimeout:        10,
 		t8NetworkIntercharTimeout: 45,
 		// Reconnection defaults
-		maxReconnectAttempts:  10,
-		reconnectBackoffBase:  2,
-		reconnectBackoffMax:   60,
-		autoReconnect:         true,
+		maxReconnectAttempts: 10,
+		reconnectBackoffBase: 2,
+		reconnectBackoffMax:  60,
+		autoReconnect:        true,
 	}
 }
 
 func (s *SecsTimeout) SetLinktest(linktest int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.linktest = linktest
 }
 
 func (s *SecsTimeout) Linktest() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.linktest
 }
 
 func (s *SecsTimeout) T3ReplyTimeout() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.t3ReplyTimeout
 }
 
 func (s *SecsTimeout) SetT3ReplyTimeout(t3ReplyTimeout int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.t3ReplyTimeout = t3ReplyTimeout
 }
 
 func (s *SecsTimeout) T5ConnSeparateTimeout() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.t5ConnSeparateTimeout
 }
 
 func (s *SecsTimeout) SetT5ConnSeparateTimeout(t5ConnSeparateTimeout int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.t5ConnSeparateTimeout = t5ConnSeparateTimeout
 }
 
 func (s *SecsTimeout) T6ControlTransTimeout() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.t6ControlTransTimeout
 }
 
 func (s *SecsTimeout) SetT6ControlTransTimeout(t6ControlTransTimeout int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.t6ControlTransTimeout = t6ControlTransTimeout
 }
 
 func (s *SecsTimeout) T7NotSelectTimeout() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.t7NotSelectTimeout
 }
 
 func (s *SecsTimeout) SetT7NotSelectTimeout(t7NotSelectTimeout int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.t7NotSelectTimeout = t7NotSelectTimeout
 }
 
 func (s *SecsTimeout) T8NetworkIntercharTimeout() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.t8NetworkIntercharTimeout
 }
 
 func (s *SecsTimeout) SetT8NetworkIntercharTimeout(t8NetworkIntercharTimeout int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.t8NetworkIntercharTimeout = t8NetworkIntercharTimeout
 }

@@ -54,7 +54,7 @@ type ControlMessage struct {
 func NewHSMSControlMessage(header []byte) HSMSMessage {
 	headerCopy := make([]byte, 10)
 	for i, b := range header {
-		if i > 10 {
+		if i >= len(headerCopy) {
 			break
 		}
 		headerCopy[i] = b
@@ -64,15 +64,12 @@ func NewHSMSControlMessage(header []byte) HSMSMessage {
 
 // NewHSMSMessageSelectReq creates HSMS Select.req control message.
 // systemBytes should have length of 4.
-func NewHSMSMessageSelectReq(sessionID uint16, systemBytes []byte) HSMSMessage {
+func NewHSMSMessageSelectReq(_ uint16, systemBytes []byte) HSMSMessage {
 	header := make([]byte, 10)
-	header[0] = byte(sessionID >> 8)
-	header[1] = byte(sessionID)
+	header[0] = 0xFF
+	header[1] = 0xFF
 	header[5] = sTypeSelectReq
-	header[6] = systemBytes[0]
-	header[7] = systemBytes[1]
-	header[8] = systemBytes[2]
-	header[9] = systemBytes[3]
+	copy(header[6:10], systemBytes)
 
 	return &ControlMessage{header}
 }
@@ -90,8 +87,8 @@ func NewHSMSMessageSelectRsp(selectReq HSMSMessage, selectStatus byte) HSMSMessa
 
 	header := make([]byte, 10)
 	msg, _ := selectReq.(*ControlMessage)
-	header[0] = msg.header[0]
-	header[1] = msg.header[1]
+	header[0] = 0xFF
+	header[1] = 0xFF
 	header[3] = selectStatus
 	header[5] = sTypeSelectRsp
 	header[6] = msg.header[6]
@@ -104,15 +101,12 @@ func NewHSMSMessageSelectRsp(selectReq HSMSMessage, selectStatus byte) HSMSMessa
 
 // NewHSMSMessageDeselectReq creates HSMS Deselect.req control message.
 // systemBytes should have length of 4.
-func NewHSMSMessageDeselectReq(sessionID uint16, systemBytes []byte) HSMSMessage {
+func NewHSMSMessageDeselectReq(_ uint16, systemBytes []byte) HSMSMessage {
 	header := make([]byte, 10)
-	header[0] = byte(sessionID >> 8)
-	header[1] = byte(sessionID)
+	header[0] = 0xFF
+	header[1] = 0xFF
 	header[5] = sTypeDeselectReq
-	header[6] = systemBytes[0]
-	header[7] = systemBytes[1]
-	header[8] = systemBytes[2]
-	header[9] = systemBytes[3]
+	copy(header[6:10], systemBytes)
 
 	return &ControlMessage{header}
 }
@@ -129,8 +123,8 @@ func NewHSMSMessageDeselectRsp(deselectReq HSMSMessage, deselectStatus byte) HSM
 
 	header := make([]byte, 10)
 	msg, _ := deselectReq.(*ControlMessage)
-	header[0] = msg.header[0]
-	header[1] = msg.header[1]
+	header[0] = 0xFF
+	header[1] = 0xFF
 	header[3] = deselectStatus
 	header[5] = sTypeDeselectRsp
 	header[6] = msg.header[6]
@@ -148,10 +142,7 @@ func NewHSMSMessageLinktestReq(systemBytes []byte) HSMSMessage {
 	header[0] = 0xFF
 	header[1] = 0xFF
 	header[5] = sTypeLinktestReq
-	header[6] = systemBytes[0]
-	header[7] = systemBytes[1]
-	header[8] = systemBytes[2]
-	header[9] = systemBytes[3]
+	copy(header[6:10], systemBytes)
 
 	return &ControlMessage{header}
 }
@@ -186,10 +177,10 @@ func NewHSMSMessageLinktestRsp(linktestReq HSMSMessage) HSMSMessage {
 // 3 means that transaction is not open, i.e. response message was received without request,
 // 4 means that data message is received in non-SELECTED state,
 // 5-255 are reserved reason codes.
-func NewHSMSMessageRejectReq(sessionID uint16, pType, sType byte, systemBytes []byte, reasonCode byte) HSMSMessage {
+func NewHSMSMessageRejectReq(_ uint16, pType, sType byte, systemBytes []byte, reasonCode byte) HSMSMessage {
 	header := make([]byte, 10)
-	header[0] = byte(sessionID >> 8)
-	header[1] = byte(sessionID)
+	header[0] = 0xFF
+	header[1] = 0xFF
 	if reasonCode == 2 {
 		header[2] = pType
 	} else {
@@ -197,49 +188,44 @@ func NewHSMSMessageRejectReq(sessionID uint16, pType, sType byte, systemBytes []
 	}
 	header[3] = reasonCode
 	header[5] = sTypeRejectReq
-	header[6] = systemBytes[0]
-	header[7] = systemBytes[1]
-	header[8] = systemBytes[2]
-	header[9] = systemBytes[3]
+	copy(header[6:10], systemBytes)
 
 	return &ControlMessage{header}
 }
 
 func NewHSMSMessageRejectReqFromMsg(rejectReq HSMSMessage, reasonCode byte) HSMSMessage {
-	if rejectReq.Type() != "Reject.req" {
-		panic("expected Reject.req message")
-	}
-
 	header := make([]byte, 10)
-	msg, _ := rejectReq.(*ControlMessage)
-	header[0] = msg.header[0]
-	header[1] = msg.header[1]
+	var rejectedHeader []byte
+	switch msg := rejectReq.(type) {
+	case *ControlMessage:
+		rejectedHeader = msg.HeaderBytes()
+	case *DataMessage:
+		rejectedHeader = msg.HeaderBytes()
+	default:
+		panic("expected HSMS data or control message")
+	}
+	header[0] = 0xFF
+	header[1] = 0xFF
 	if reasonCode == 2 {
-		header[2] = msg.header[4] // pType
+		header[2] = rejectedHeader[4] // pType
 	} else {
-		header[2] = msg.header[5] // sType
+		header[2] = rejectedHeader[5] // sType
 	}
 	header[3] = reasonCode
 	header[5] = sTypeRejectReq
-	header[6] = msg.header[0]
-	header[7] = msg.header[1]
-	header[8] = msg.header[2]
-	header[9] = msg.header[3]
+	copy(header[6:10], rejectedHeader[6:10])
 
 	return &ControlMessage{header}
 }
 
 // NewHSMSMessageSeparateReq creates HSMS Separate.req control message.
 // systemBytes should have length of 4.
-func NewHSMSMessageSeparateReq(sessionID uint16, systemBytes []byte) HSMSMessage {
+func NewHSMSMessageSeparateReq(_ uint16, systemBytes []byte) HSMSMessage {
 	header := make([]byte, 10)
-	header[0] = byte(sessionID >> 8)
-	header[1] = byte(sessionID)
+	header[0] = 0xFF
+	header[1] = 0xFF
 	header[5] = sTypeSeparateReq
-	header[6] = systemBytes[0]
-	header[7] = systemBytes[1]
-	header[8] = systemBytes[2]
-	header[9] = systemBytes[3]
+	copy(header[6:10], systemBytes)
 
 	return &ControlMessage{header}
 }
@@ -283,8 +269,23 @@ func (msg *ControlMessage) ToBytes() []byte {
 }
 
 func (msg *ControlMessage) SystemBytes() []byte {
-	return msg.header[6:10]
+	result := make([]byte, 4)
+	copy(result, msg.header[6:10])
+	return result
 }
+
+// HeaderBytes returns a defensive copy of the 10-byte HSMS message header.
+func (msg *ControlMessage) HeaderBytes() []byte {
+	result := make([]byte, len(msg.header))
+	copy(result, msg.header)
+	return result
+}
+
+// PType returns the presentation type encoded in the control header.
+func (msg *ControlMessage) PType() byte { return msg.header[4] }
+
+// SType returns the session type encoded in the control header.
+func (msg *ControlMessage) SType() byte { return msg.header[5] }
 
 // SessionID returns the session identifier encoded in the control message header.
 func (msg *ControlMessage) SessionID() uint16 {

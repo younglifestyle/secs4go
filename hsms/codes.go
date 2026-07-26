@@ -12,6 +12,12 @@ const (
 type RejectReason byte
 
 const (
-	RejectReasonBusyOrAlreadyActive RejectReason = 2
-	RejectReasonNotReady            RejectReason = 4
+	RejectReasonSTypeNotSupported  RejectReason = 1
+	RejectReasonPTypeNotSupported  RejectReason = 2
+	RejectReasonTransactionNotOpen RejectReason = 3
+	RejectReasonNotSelected        RejectReason = 4
+
+	// Deprecated aliases retained for source compatibility.
+	RejectReasonBusyOrAlreadyActive = RejectReasonPTypeNotSupported
+	RejectReasonNotReady            = RejectReasonNotSelected
 )

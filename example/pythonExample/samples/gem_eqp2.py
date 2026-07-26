@@ -1,3 +1,4 @@
+import argparse
 import logging
 import code
 import threading
@@ -233,7 +234,19 @@ class EnhancedEquipment(secsgem.gem.GemEquipmentHandler):
             return self.stream_function(7, 6)({"PPID": str(ppid), "PDATA": bin_body})
 
 
-if __name__ == "__main__":
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Python equipment for secs4go interoperability tests")
+    parser.add_argument("--address", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=15000)
+    parser.add_argument("--session", type=int, default=2)
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=0,
+        help="run for this many seconds and exit; 0 keeps the interactive console",
+    )
+    args = parser.parse_args()
+
     commLogFileHandler = CommunicationLogFileHandler("log", "e")
     commLogFileHandler.setFormatter(logging.Formatter("%(asctime)s: %(message)s"))
     logging.getLogger("communication").addHandler(commLogFileHandler)
@@ -244,16 +257,25 @@ if __name__ == "__main__":
     )
 
     settings = secsgem.hsms.HsmsSettings(
-        address="127.0.0.1",
-        port=15000,
+        address=args.address,
+        port=args.port,
         connect_mode=secsgem.hsms.HsmsConnectMode.PASSIVE,
         device_type=secsgem.common.DeviceType.EQUIPMENT,
-        session_id=2,
+        device_id=args.session,
     )
 
     h = EnhancedEquipment(settings)
     h.enable()
 
-    code.interact("equipment object is available as variable 'h'", local=locals())
+    try:
+        if args.duration > 0:
+            logging.info("equipment running for %.1f seconds", args.duration)
+            time.sleep(args.duration)
+        else:
+            code.interact("equipment object is available as variable 'h'", local=locals())
+    finally:
+        h.disable()
 
-    h.disable()
+
+if __name__ == "__main__":
+    main()

@@ -2,6 +2,7 @@ package hsms
 
 import (
 	"fmt"
+	"sync"
 
 	link "github.com/younglifestyle/secs4go"
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
@@ -20,6 +21,7 @@ var HSMSSTYPES = map[int]string{
 
 // HsmsConnection encapsulates active/passive connection behaviour shared by both roles.
 type HsmsConnection struct {
+	mu            sync.RWMutex
 	active        bool
 	remoteAddress string
 	remotePort    int
@@ -40,31 +42,37 @@ func NewHsmsConnection(active bool, address string, port int, sessionID int, del
 }
 
 func (c *HsmsConnection) Session() *link.Session {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.connection
 }
 
 func (c *HsmsConnection) SetSession(session *link.Session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.connection = session
 }
 
 func (c *HsmsConnection) Send(msg interface{}) error {
-	if c.connection == nil {
+	session := c.Session()
+	if session == nil {
 		return ErrNotConnected
 	}
-	return c.connection.Send(msg)
+	return session.Send(msg)
 }
 
 func (c *HsmsConnection) Close() error {
-	if c.connection == nil {
+	session := c.Session()
+	if session == nil {
 		return nil
 	}
-	return c.connection.Close()
+	return session.Close()
 }
 
 func (c *HsmsConnection) sendRejectRsp(packet ast.HSMSMessage, reasonCode byte) {
 	rejectReq := ast.NewHSMSMessageRejectReqFromMsg(packet, reasonCode)
 	c.hp.logControlMessage("TX", rejectReq)
-	if err := c.connection.Send(rejectReq.ToBytes()); err != nil {
+	if err := c.Send(rejectReq.ToBytes()); err != nil {
 		c.hp.logger.Error("send reject rsp failed", "error", err)
 	}
 }
@@ -76,7 +84,7 @@ func (c *HsmsConnection) sendLinktestReq() {
 
 	message := ast.NewHSMSMessageLinktestReq(c.hp.encodeSystemID(systemID))
 	c.hp.logControlMessage("TX", message)
-	if err := c.connection.Send(message.ToBytes()); err != nil {
+	if err := c.Send(message.ToBytes()); err != nil {
 		c.hp.logger.Error("send linktest.req failed", "error", err)
 		return
 	}
@@ -89,7 +97,7 @@ func (c *HsmsConnection) sendLinktestReq() {
 func (c *HsmsConnection) sendDeselectRsp(message ast.HSMSMessage, status ControlStatus) {
 	response := ast.NewHSMSMessageDeselectRsp(message, byte(status))
 	c.hp.logControlMessage("TX", response)
-	if err := c.connection.Send(response.ToBytes()); err != nil {
+	if err := c.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Error("send deselect.rsp failed", "error", err)
 	}
 }
@@ -97,7 +105,7 @@ func (c *HsmsConnection) sendDeselectRsp(message ast.HSMSMessage, status Control
 func (c *HsmsConnection) sendSelectRsp(message ast.HSMSMessage, status ControlStatus) {
 	response := ast.NewHSMSMessageSelectRsp(message, byte(status))
 	c.hp.logControlMessage("TX", response)
-	if err := c.connection.Send(response.ToBytes()); err != nil {
+	if err := c.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Error("send select.rsp failed", "error", err)
 	}
 }
@@ -105,7 +113,7 @@ func (c *HsmsConnection) sendSelectRsp(message ast.HSMSMessage, status ControlSt
 func (c *HsmsConnection) sendLinkTestRsp(message ast.HSMSMessage) {
 	response := ast.NewHSMSMessageLinktestRsp(message)
 	c.hp.logControlMessage("TX", response)
-	if err := c.connection.Send(response.ToBytes()); err != nil {
+	if err := c.Send(response.ToBytes()); err != nil {
 		c.hp.logger.Error("send linktest.rsp failed", "error", err)
 	}
 }
@@ -113,7 +121,7 @@ func (c *HsmsConnection) sendLinkTestRsp(message ast.HSMSMessage) {
 func (c *HsmsConnection) sendReject(message ast.HSMSMessage, reason RejectReason) {
 	reject := ast.NewHSMSMessageRejectReqFromMsg(message, byte(reason))
 	c.hp.logControlMessage("TX", reject)
-	if err := c.connection.Send(reject.ToBytes()); err != nil {
+	if err := c.Send(reject.ToBytes()); err != nil {
 		c.hp.logger.Error("send reject.req failed", "error", err)
 	}
 }
@@ -125,7 +133,7 @@ func (c *HsmsConnection) sendSelectReq() error {
 
 	request := ast.NewHSMSMessageSelectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID))
 	c.hp.logControlMessage("TX", request)
-	if err := c.connection.Send(request.ToBytes()); err != nil {
+	if err := c.Send(request.ToBytes()); err != nil {
 		c.hp.logger.Error("send select.req failed", "error", err)
 		return err
 	}
@@ -158,7 +166,7 @@ func (c *HsmsConnection) sendDeselectReq() error {
 
 	request := ast.NewHSMSMessageDeselectReq(uint16(c.hp.sessionID), c.hp.encodeSystemID(systemID))
 	c.hp.logControlMessage("TX", request)
-	if err := c.connection.Send(request.ToBytes()); err != nil {
+	if err := c.Send(request.ToBytes()); err != nil {
 		c.hp.logger.Error("send deselect.req failed", "error", err)
 		return err
 	}

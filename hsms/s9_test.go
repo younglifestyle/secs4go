@@ -63,7 +63,7 @@ func TestBuildS9F5(t *testing.T) {
 func TestBuildS9F7(t *testing.T) {
 	systemBytes := []byte{1, 1, 1, 1}
 
-	// BuildS9F7 takes only systemBytes (has empty body)
+	// BuildS9F7 takes only systemBytes and supplies a zero MHEAD for compatibility.
 	msg := BuildS9F7(systemBytes)
 
 	if msg.StreamCode() != 9 || msg.FunctionCode() != 7 {
@@ -75,13 +75,15 @@ func TestBuildS9F7(t *testing.T) {
 		t.Error("Message should be convertible to HSMS bytes")
 	}
 
-	// S9F7 has empty list body
+	// S9F7 has a 10-byte MHEAD body.
 	body, err := msg.Get()
 	if err != nil {
 		t.Errorf("Failed to get body: %v", err)
 	}
-	if _, ok := body.(*ast.ListNode); !ok {
-		t.Errorf("Expected ListNode body for S9F7, got %T", body)
+	if node, ok := body.(*ast.BinaryNode); !ok {
+		t.Errorf("Expected BinaryNode body for S9F7, got %T", body)
+	} else if values := node.Values().([]int); len(values) != 10 {
+		t.Errorf("Expected 10-byte MHEAD, got %v", values)
 	}
 }
 
@@ -119,13 +121,15 @@ func TestBuildS9F11(t *testing.T) {
 		t.Error("Message should be convertible to HSMS bytes")
 	}
 
-	// S9F11 has empty list body
+	// S9F11 has a 10-byte MHEAD body.
 	body, err := msg.Get()
 	if err != nil {
 		t.Errorf("Failed to get body: %v", err)
 	}
-	if _, ok := body.(*ast.ListNode); !ok {
-		t.Errorf("Expected ListNode body for S9F11, got %T", body)
+	if node, ok := body.(*ast.BinaryNode); !ok {
+		t.Errorf("Expected BinaryNode body for S9F11, got %T", body)
+	} else if values := node.Values().([]int); len(values) != 10 {
+		t.Errorf("Expected 10-byte MHEAD, got %v", values)
 	}
 }
 

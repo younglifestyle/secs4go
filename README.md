@@ -10,7 +10,7 @@ Simple Golang SECS/GEM implementation.
 
 ```
 opts := gem.Options{
-    Protocol:   hsms.NewHsmsProtocol("127.0.0.1", 5000, true, 0xFFFF, "sample"),
+    Protocol:   hsms.NewHsmsProtocol("127.0.0.1", 5000, true, 0, "sample"),
     DeviceType: gem.DeviceHost,
 }
 handler, err := gem.NewGemHandler(opts)

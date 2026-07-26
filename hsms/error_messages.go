@@ -1,6 +1,9 @@
 package hsms
 
 import (
+	"fmt"
+	"unicode/utf8"
+
 	"github.com/younglifestyle/secs4go/lib-secs2-hsms-go/pkg/ast"
 )
 
@@ -46,18 +49,18 @@ const MaxHSMSMessageSize = 16 * 1024 * 1024
 // BuildS9F1 creates an S9F1 message (Unrecognized Device ID).
 // This is sent when a message is received with a device ID that is not recognized.
 //
-// Message structure: BINARY[1] - the unrecognized device ID
-func BuildS9F1(unrecognizedDeviceID byte, systemBytes []byte) *ast.DataMessage {
-	body := ast.NewBinaryNode(int(unrecognizedDeviceID))
+// Message structure: MHEAD BINARY[10] - the header of the rejected message.
+func BuildS9F1(messageHeader interface{}, systemBytes []byte) *ast.DataMessage {
+	body := binaryHeaderNode(normalizeLegacyHeader(messageHeader, 1))
 	return ast.NewHSMSDataMessage("", 9, 1, 0, "H<-E", body, 0, systemBytes)
 }
 
 // BuildS9F3 creates an S9F3 message (Unrecognized Stream).
 // This is sent when a message is received with a stream code that is not supported.
 //
-// Message structure: BINARY[1] - the unrecognized stream code
-func BuildS9F3(unrecognizedStream byte, systemBytes []byte) *ast.DataMessage {
-	body := ast.NewBinaryNode(int(unrecognizedStream))
+// Message structure: MHEAD BINARY[10] - the header of the rejected message.
+func BuildS9F3(messageHeader interface{}, systemBytes []byte) *ast.DataMessage {
+	body := binaryHeaderNode(normalizeLegacyHeader(messageHeader, 2))
 	return ast.NewHSMSDataMessage("", 9, 3, 0, "H<-E", body, 0, systemBytes)
 }
 
@@ -65,9 +68,9 @@ func BuildS9F3(unrecognizedStream byte, systemBytes []byte) *ast.DataMessage {
 // This is sent when a message is received with a function code that is not supported
 // for the given stream.
 //
-// Message structure: BINARY[1] - the unrecognized function code
-func BuildS9F5(unrecognizedFunction byte, systemBytes []byte) *ast.DataMessage {
-	body := ast.NewBinaryNode(int(unrecognizedFunction))
+// Message structure: MHEAD BINARY[10] - the header of the rejected message.
+func BuildS9F5(messageHeader interface{}, systemBytes []byte) *ast.DataMessage {
+	body := binaryHeaderNode(normalizeLegacyHeader(messageHeader, 3))
 	return ast.NewHSMSDataMessage("", 9, 5, 0, "H<-E", body, 0, systemBytes)
 }
 
@@ -75,11 +78,10 @@ func BuildS9F5(unrecognizedFunction byte, systemBytes []byte) *ast.DataMessage {
 // This is sent when a message is received with data that cannot be parsed or
 // does not conform to the expected format.
 //
-// Message structure: <empty> or optionally error description
-func BuildS9F7(systemBytes []byte) *ast.DataMessage {
-	// Per SEMI E5 standard, S9F7 can have empty body or ASCII error description
-	// Using empty body for simplicity
-	body := ast.NewListNode()
+// Message structure: MHEAD BINARY[10]. The optional argument is the offending
+// message header; omitting it produces an all-zero header for API compatibility.
+func BuildS9F7(systemBytes []byte, messageHeader ...[]byte) *ast.DataMessage {
+	body := binaryHeaderNode(firstHeader(messageHeader))
 	return ast.NewHSMSDataMessage("", 9, 7, 0, "H<-E", body, 0, systemBytes)
 }
 
@@ -91,31 +93,76 @@ func BuildS9F7(systemBytes []byte) *ast.DataMessage {
 //
 // Message structure: BINARY[10] - the message header of the timed-out message
 func BuildS9F9(sHeader []byte, systemBytes []byte) *ast.DataMessage {
-	headerData := make([]interface{}, len(sHeader))
-	for i, b := range sHeader {
-		headerData[i] = b
-	}
-	body := ast.NewBinaryNode(headerData...)
+	body := binaryHeaderNode(sHeader)
 	return ast.NewHSMSDataMessage("", 9, 9, 0, "H<-E", body, 0, systemBytes)
 }
 
 // BuildS9F11 creates an S9F11 message (Data Too Long).
 // This is sent when a message exceeds the maximum allowable size.
 //
-// Message structure: <empty>
-func BuildS9F11(systemBytes []byte) *ast.DataMessage {
-	body := ast.NewListNode()
+// Message structure: MHEAD BINARY[10]. The optional argument is the offending
+// message header; omitting it produces an all-zero header for API compatibility.
+func BuildS9F11(systemBytes []byte, messageHeader ...[]byte) *ast.DataMessage {
+	body := binaryHeaderNode(firstHeader(messageHeader))
 	return ast.NewHSMSDataMessage("", 9, 11, 0, "H<-E", body, 0, systemBytes)
 }
 
-// BuildS9F13 creates an S9F13 message (Conversation Timeout).
-// This is sent when a multi-block transaction does not complete within
-// the allowed time period.
-//
-// Message structure: <empty>
+func firstHeader(headers [][]byte) []byte {
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers[0]
+}
+
+func binaryHeaderNode(header []byte) ast.ItemNode {
+	values := make([]interface{}, 10)
+	for i := range values {
+		if i < len(header) {
+			values[i] = header[i]
+		} else {
+			values[i] = byte(0)
+		}
+	}
+	return ast.NewBinaryNode(values...)
+}
+
+func normalizeLegacyHeader(value interface{}, legacyIndex int) []byte {
+	if header, ok := value.([]byte); ok {
+		return header
+	}
+	header := make([]byte, 10)
+	switch v := value.(type) {
+	case byte:
+		header[legacyIndex] = v
+	case int:
+		header[legacyIndex] = byte(v)
+	}
+	return header
+}
+
+// BuildS9F13 creates a legacy empty S9F13 message.
+// Deprecated: use BuildS9F13ConversationTimeout to include required MEXP/EDID data.
 func BuildS9F13(systemBytes []byte) *ast.DataMessage {
 	body := ast.NewListNode()
 	return ast.NewHSMSDataMessage("", 9, 13, 0, "H<-E", body, 0, systemBytes)
+}
+
+// BuildS9F13ConversationTimeout creates a standards-shaped S9F13 body:
+// <L <A[6] MEXP> <EDID>>.
+func BuildS9F13ConversationTimeout(messageExpected string, entityID ast.ItemNode, systemBytes []byte) (*ast.DataMessage, error) {
+	if !utf8.ValidString(messageExpected) || len(messageExpected) != 6 {
+		return nil, fmt.Errorf("hsms: MEXP must contain exactly 6 ASCII bytes")
+	}
+	for _, value := range []byte(messageExpected) {
+		if value > 0x7F {
+			return nil, fmt.Errorf("hsms: MEXP must contain only ASCII characters")
+		}
+	}
+	if entityID == nil {
+		return nil, fmt.Errorf("hsms: EDID is required")
+	}
+	body := ast.NewListNode(ast.NewASCIINode(messageExpected), entityID)
+	return ast.NewHSMSDataMessage("", 9, 13, 0, "H<-E", body, 0, systemBytes), nil
 }
 
 // S9ErrorInfo contains information about a Stream 9 error that occurred.
@@ -128,14 +175,17 @@ type S9ErrorInfo struct {
 	OriginalMessage *ast.DataMessage
 	// SystemBytes from the original message
 	SystemBytes []byte
+	// MessageHeader is the 10-byte MHEAD/SHEAD carried by the S9 message.
+	MessageHeader []byte
 }
 
 // NewS9ErrorInfo creates a new S9ErrorInfo with the given parameters.
 func NewS9ErrorInfo(errorCode int, errorText string, originalMsg *ast.DataMessage, systemBytes []byte) *S9ErrorInfo {
+	systemBytesCopy := append([]byte(nil), systemBytes...)
 	return &S9ErrorInfo{
 		ErrorCode:       errorCode,
 		ErrorText:       errorText,
 		OriginalMessage: originalMsg,
-		SystemBytes:     systemBytes,
+		SystemBytes:     systemBytesCopy,
 	}
 }

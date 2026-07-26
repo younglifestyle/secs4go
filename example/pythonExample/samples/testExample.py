@@ -1,38 +1,54 @@
-#####################################################################
-# testExample.py
-#
-# (c) Copyright 2013-2015, Benjamin Parzella. All rights reserved.
-#
-# This library is free software; you can redistribute it and/or
-# modify it under the terms of the GNU Lesser General Public
-# License as published by the Free Software Foundation; either
-# version 2.1 of the License, or (at your option) any later version.
-#
-# This software is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
-#####################################################################
+"""Self-contained HSMS linktest smoke test using the current secsgem API."""
 
+import socket
 import unittest
 
+import secsgem.common
 import secsgem.gem
+import secsgem.hsms
+
+
+def _free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 class TestExampleSecsGem(unittest.TestCase):
-    def setUp(self):
-        self.handler = secsgem.gem.GemHandler.hsms("10.211.55.33", 5000, False, 0, "test")
+    def setUp(self) -> None:
+        port = _free_local_port()
+        equipment_settings = secsgem.hsms.HsmsSettings(
+            address="127.0.0.1",
+            port=port,
+            connect_mode=secsgem.hsms.HsmsConnectMode.PASSIVE,
+            device_type=secsgem.common.DeviceType.EQUIPMENT,
+            device_id=2,
+        )
+        host_settings = secsgem.hsms.HsmsSettings(
+            address="127.0.0.1",
+            port=port,
+            connect_mode=secsgem.hsms.HsmsConnectMode.ACTIVE,
+            device_type=secsgem.common.DeviceType.HOST,
+            device_id=2,
+        )
 
-        self.handler.enable()
-        self.handler.waitfor_communicating()
+        self.equipment = secsgem.gem.GemEquipmentHandler(equipment_settings)
+        self.host = secsgem.gem.GemHostHandler(host_settings)
+        self.equipment.enable()
+        self.host.enable()
+        self.assertTrue(self.host.waitfor_communicating(5), "host did not reach COMMUNICATING")
 
-    def tearDown(self):
-        self.handler.disable()
+    def tearDown(self) -> None:
+        self.host.disable()
+        self.equipment.disable()
 
-    def testLinktest(self):
-        result_message = self.handler.send_linktest_req()
+    def test_linktest(self) -> None:
+        response = self.host.protocol.send_linktest_req()
 
-        self.assertEqual(result_message.header.s_type.value, 6)
-        self.assertEqual(result_message.header.device_id, 65535)
+        self.assertIsNotNone(response)
+        self.assertEqual(response.header.s_type.value, 6)
+        self.assertEqual(response.header.device_id, 0xFFFF)
 
 
+if __name__ == "__main__":
+    unittest.main()

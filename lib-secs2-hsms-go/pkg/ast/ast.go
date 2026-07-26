@@ -197,7 +197,26 @@ func (node *DataMessage) SessionID() int {
 // SystemBytes returns the system bytes of the SECS-II message.
 // If the system bytes was not set, it will return []byte{0, 0, 0, 0}.
 func (node *DataMessage) SystemBytes() []byte {
-	return node.systemBytes
+	result := make([]byte, len(node.systemBytes))
+	copy(result, node.systemBytes)
+	return result
+}
+
+// HeaderBytes returns the 10-byte HSMS header for a fully specified message.
+// The returned slice is independent from the message and may be modified safely.
+func (node *DataMessage) HeaderBytes() []byte {
+	header := make([]byte, 10)
+	if node.sessionID >= 0 {
+		header[0] = byte(node.sessionID >> 8)
+		header[1] = byte(node.sessionID)
+	}
+	header[2] = byte(node.stream)
+	if node.waitBit == 1 {
+		header[2] |= 0x80
+	}
+	header[3] = byte(node.function)
+	copy(header[6:], node.systemBytes)
+	return header
 }
 
 // SetSessionIDAndSystemBytes sets session id and system bytes to the message.

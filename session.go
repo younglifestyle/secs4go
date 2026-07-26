@@ -109,7 +109,9 @@ func (session *Session) Receive() (interface{}, error) {
 
 	msg, err := session.codec.Receive()
 	if err != nil {
-		session.Close()
+		if nonFatal, ok := err.(NonFatalError); !ok || !nonFatal.NonFatal() {
+			_ = session.Close()
+		}
 	}
 	return msg, err
 }
@@ -169,12 +171,11 @@ type closeCallback struct {
 }
 
 func (session *Session) AddCloseCallback(handler, key interface{}, callback func()) {
+	session.closeMutex.Lock()
+	defer session.closeMutex.Unlock()
 	if session.IsClosed() {
 		return
 	}
-
-	session.closeMutex.Lock()
-	defer session.closeMutex.Unlock()
 
 	newItem := &closeCallback{handler, key, callback, nil}
 
@@ -212,9 +213,12 @@ func (session *Session) RemoveCloseCallback(handler, key interface{}) {
 
 func (session *Session) invokeCloseCallbacks() {
 	session.closeMutex.Lock()
-	defer session.closeMutex.Unlock()
+	callbacks := session.firstCloseCallback
+	session.firstCloseCallback = nil
+	session.lastCloseCallback = nil
+	session.closeMutex.Unlock()
 
-	for callback := session.firstCloseCallback; callback != nil; callback = callback.Next {
+	for callback := callbacks; callback != nil; callback = callback.Next {
 		callback.Func()
 	}
 }
